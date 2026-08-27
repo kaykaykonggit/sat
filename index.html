@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SAT — Shift Arrangement Tool</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📅</text></svg>" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- ======================= Sidebar ======================= -->
+    <aside class="sidebar">
+      <h2>⚙️ Settings</h2>
+
+      <fieldset>
+        <legend>Time Period</legend>
+        <label for="startDate">Start date</label>
+        <input type="date" id="startDate" />
+        <label for="endDate">End date</label>
+        <input type="date" id="endDate" />
+      </fieldset>
+
+      <fieldset>
+        <legend>Colleague Names</legend>
+        <textarea id="names" rows="4">Andy, Jessica, Tina, Alan</textarea>
+        <p class="hint">Comma- or newline-separated.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Public Holidays</legend>
+        <textarea id="holidays" rows="3" placeholder="2026-10-01, 2026-10-02"></textarea>
+        <p class="hint">YYYY-MM-DD, comma-separated.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Unavailability</legend>
+        <label for="rec-name">Colleague</label>
+        <select id="rec-name"></select>
+        <label for="rec-date">Date</label>
+        <input type="date" id="rec-date" />
+        <label for="rec-note">Reason / Note</label>
+        <input type="text" id="rec-note" placeholder="Night, VL, TO, ..." />
+        <button type="button" id="add-rec" class="primary">＋ Add Record</button>
+        <p id="rec-error" class="error"></p>
+        <div id="records-list"></div>
+      </fieldset>
+    </aside>
+
+    <!-- ======================= Main view ======================= -->
+    <main class="main">
+      <header>
+        <h1>📅 SAT — Shift Arrangement Tool</h1>
+        <p class="subtitle">Generate an even, constraint-respecting duty schedule and export it to Excel.</p>
+      </header>
+
+      <section id="preview-wrap" class="panel hidden">
+        <h3>Preview</h3>
+        <div class="table-scroll">
+          <table class="preview">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Morning Health Check (08:45~)</th>
+                <th>Deployment</th>
+                <th>Weekend Morning health check (08:45~)</th>
+                <th>Not available</th>
+              </tr>
+            </thead>
+            <tbody id="preview-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h3>Shift Counts</h3>
+        <div class="table-scroll">
+          <table class="counts">
+            <thead>
+              <tr>
+                <th>Colleague</th>
+                <th>Morning Health Check (08:45~)</th>
+                <th>Deployment</th>
+                <th>Weekend Morning health check (08:45~)</th>
+              </tr>
+            </thead>
+            <tbody id="counts-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel export-panel">
+        <h3>Export</h3>
+        <button type="button" id="export-btn" class="primary big" disabled>
+          ⬇️ Download Excel Schedule
+        </button>
+        <p class="hint">
+          Saves a styled Excel-compatible <code>.xls</code> file (no third-party
+          libraries — generated entirely in your browser).
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <script src="sat.js"></script>
+</body>
+</html>

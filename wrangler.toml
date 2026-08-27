@@ -1,0 +1,8 @@
+# Wrangler configuration for Cloudflare Pages.
+# SAT is a fully static site: index.html + sat.js + style.css, no build step.
+# The build output dir is the repo root (all static assets live here).
+
+name = "sat-shift-schedule"
+
+# Cloudflare Pages serves the static files from this directory.
+pages_build_output_dir = "."
