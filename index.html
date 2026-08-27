@@ -34,7 +34,7 @@
           <option value="holiday">Holiday</option>
           <option value="deploy">Manual Deployment</option>
           <option value="morning">Manual Morning Health Check</option>
-          <option value="weekend">Manual Weekend Morning Health Check</option>
+          <option value="weekend">Manual Weekend Support</option>
         </select>
         <label for="rec-line">Dates</label>
         <input type="text" id="rec-line" placeholder="sep1,5,20-23  —  or  Andy: sep1,5" />
@@ -44,8 +44,10 @@
         <strong>Holiday</strong> with no name marks those dates as holidays; with a
         name it also marks that colleague off work that day.<br />
         Manual shifts <em>require</em> a name and lock that person in for those dates.
-        Deployment is honored even on weekends. Use ranges <code>7-20</code> or lists
-        <code>2,5,11</code>.</p>
+        Morning runs weekdays, <strong>Deployment</strong> runs weekdays only, and
+        <strong>Weekend Support</strong> covers Sat/Sun/public holidays — each is kept
+        balanced across everyone. Manual locks are honored even on non-typical days.
+        Use ranges <code>7-20</code> or lists <code>2,5,11</code>.</p>
         <p id="hk-status" class="hint">HK holidays: loading…</p>
         <p id="rec-unified-error" class="error"></p>
       </fieldset>
@@ -73,8 +75,8 @@
           <span><i class="sw sw-morning sw-manual"></i>Morning (manual)</span>
           <span><i class="sw sw-deploy"></i>Deployment</span>
           <span><i class="sw sw-deploy sw-manual"></i>Deployment (manual)</span>
-          <span><i class="sw sw-weekend"></i>Weekend duty</span>
-          <span><i class="sw sw-weekend sw-manual"></i>Weekend (manual)</span>
+          <span><i class="sw sw-weekend"></i>Weekend Support</span>
+          <span><i class="sw sw-weekend sw-manual"></i>Weekend Support (manual)</span>
           <span><i class="sw sw-avail"></i>Available</span>
         </div>
         <div class="table-scroll">
@@ -94,8 +96,8 @@
                 <th>Date</th>
                 <th>Morning Health Check (08:45~)</th>
                 <th>Deployment</th>
-                <th>Weekend Morning health check (08:45~)</th>
-                <th>Not available</th>
+                <th>Weekend Support</th>
+                <th>Unavailable</th>
               </tr>
             </thead>
             <tbody id="preview-tbody"></tbody>
@@ -112,7 +114,7 @@
                 <th>Colleague</th>
                 <th>Morning Health Check (08:45~)</th>
                 <th>Deployment</th>
-                <th>Weekend Morning health check (08:45~)</th>
+                <th>Weekend Support</th>
               </tr>
             </thead>
             <tbody id="counts-tbody"></tbody>

@@ -493,8 +493,12 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
   const rows = [];
 
   for (const day of days) {
-    const weekdayShift = needsWeekdayShift(day);
+    // A day is a WORK day (Morning + Deployment) only when it is neither a
+    // calendar weekend nor a public holiday. Holidays — even when they fall on
+    // a weekday — are covered by the Weekend Support shift only, so no
+    // Morning/Deployment is scheduled on them.
     const weekendShift = needsWeekendShift(day, holidays);
+    const weekdayShift = !weekendShift;
 
     // Build display notes for this date.
     const notes = [];
@@ -508,53 +512,85 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
 
     const availableFor = (name) => !(unavailable[name] && unavailable[name][day]);
 
-    // ---- Morning Health Check (weekday only) -----------------------------
+    // ---- Workday shifts: Morning Health Check + Deployment -----------------
+    // On a workday (Mon–Fri, not a public holiday) two SEPARATE colleagues are
+    // on duty: Morning Health Check and Deployment. Each shift is balanced
+    // independently (equal-ish Deployment days, equal-ish Morning days), so the
+    // two are chosen TOGETHER each day as the pair that keeps BOTH counts most
+    // even (never the same person on both shifts). A manual Deployment lock is
+    // honored on ANY day type (even weekend/holiday); a manual Morning lock is
+    // honored on workdays.
     let morning = "";
     let morningManual = false;
-    if (weekdayShift) {
-      // Manual override: use the locked-in name if valid AND available. If the
-      // manual name is unavailable we fall back to auto-assignment that day.
-      const manual = manualMorning[day] && manualMorning[day].name;
-      if (manual && availableFor(manual)) {
-        morning = manual;
-        morningManual = true;
-        counts[morning].morning++;
-      } else {
-        const pool = names.filter((n) => availableFor(n) && !cannotMorningToday.has(n));
-        if (pool.length) {
-          morning = pool.reduce((best, n) =>
-            counts[n].morning < counts[best].morning ? n : best
-          );
-          counts[morning].morning++;
-        }
-      }
-    }
-
-    // ---- Deployment ----------------------------------------------------
-    // A saved manual deployment is honored on ANY day type (weekday or
-    // weekend): it always puts that person in the Deployment column,
-    // regardless of whether the day is a weekday, weekend, or holiday.
-    // Auto-assignment of the Deployment shift still runs on weekdays only.
     let deployment = "";
     let deploymentManual = false;
+
     const manualDeployForDay = manualDeployment[day] && manualDeployment[day].name;
     if (manualDeployForDay && availableFor(manualDeployForDay)) {
       deployment = manualDeployForDay;
       deploymentManual = true;
       counts[deployment].deployment++; // totals reflect who actually worked
-    } else if (weekdayShift) {
-      const pool = names.filter(availableFor);
-      if (pool.length) {
-        deployment = pool.reduce((best, n) => {
-          const kBest = counts[best].deployment + (best === morning ? 0.5 : 0);
-          const kN = counts[n].deployment + (n === morning ? 0.5 : 0);
-          return kN < kBest ? n : best;
-        });
-        counts[deployment].deployment++;
+    }
+
+    if (weekdayShift) {
+      const manualMorningForDay = manualMorning[day] && manualMorning[day].name;
+      const hasManualMorning = manualMorningForDay && availableFor(manualMorningForDay);
+
+      // Morning manual lock (if any): honored on a workday.
+      if (hasManualMorning) {
+        morning = manualMorningForDay;
+        morningManual = true;
+        counts[morning].morning++;
+      }
+
+      if (deployment) {
+        // Deployment already locked (manual). Auto Morning where available,
+        // distinct from the deployment person and not rest-blocked.
+        if (!hasManualMorning) {
+          const pool = names.filter(
+            (n) => availableFor(n) && n !== deployment && !cannotMorningToday.has(n)
+          );
+          if (pool.length) {
+            morning = pool.reduce((best, n) =>
+              counts[n].morning < counts[best].morning ? n : best
+            );
+            counts[morning].morning++;
+          }
+        }
+      } else if (hasManualMorning) {
+        // Auto Deployment (manual Morning is fixed): balance Deployment days,
+        // never the manual-morning person.
+        const pool = names.filter((n) => availableFor(n) && n !== manualMorningForDay);
+        if (pool.length) {
+          deployment = pool.reduce((best, n) =>
+            counts[n].deployment < counts[best].deployment ? n : best
+          );
+          counts[deployment].deployment++;
+        }
+      } else {
+        // Fully auto: choose the (Deployment, Morning) pair that best balances
+        // BOTH counts. Minimise the larger predicted count first, then the total,
+        // so neither shift drifts.
+        const dPool = names.filter((n) => availableFor(n));
+        const mPool = names.filter((n) => availableFor(n) && !cannotMorningToday.has(n));
+        let bestD = "", bestM = "", bestScore = Infinity;
+        for (const d of dPool) {
+          for (const mm of mPool) {
+            if (d === mm) continue; // never the same person on both shifts
+            const depNext = counts[d].deployment + 1;
+            const morNext = counts[mm].morning + 1;
+            const score = Math.max(depNext, morNext) * 1000 + (depNext + morNext);
+            if (score < bestScore) { bestScore = score; bestD = d; bestM = mm; }
+          }
+        }
+        if (bestM !== "") {
+          deployment = bestD; counts[deployment].deployment++;
+          morning = bestM; counts[morning].morning++;
+        }
       }
     }
 
-    // ---- Weekend Morning Health Check ------------------------------------
+    // ---- Weekend Support (Sat/Sun/public holidays) ---------------------------
     let weekend = "";
     let weekendManual = false;
     if (weekendShift) {
@@ -566,9 +602,9 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
         counts[weekend].weekend++;
         if (isWeekendISO(day)) lastWeekendPerson = weekend;
       } else {
-        // Exclude today's deployment person from the weekend-morning pool so a
-        // colleague who is (manually) deployed on a weekend isn't double-booked
-        // into both the Deployment and the Weekend morning shift.
+        // Exclude today's (manual) deployment person from the Weekend Support
+        // pool so a colleague who is deployed on a weekend isn't double-booked
+        // into both the Deployment and the Weekend Support shift.
         const pool = names.filter((n) => availableFor(n) && n !== deployment);
         if (pool.length) {
           weekend = pool.reduce((best, n) => {
@@ -737,14 +773,14 @@ function renderMatrix(rows, namesList, unavailable) {
           td.title = "Deployment duty";
         }
       } else if (row && row.weekend === name) {
-        td.classList.add("matrix-weekend-duty");
+        td.className = "matrix-weekend-duty";
         if (row.weekendManual) {
           td.classList.add("matrix-weekend-manual");
           td.textContent = "W*";
-          td.title = "Weekend duty (manual)";
+          td.title = "Weekend Support (manual)";
         } else {
           td.textContent = "W";
-          td.title = "Weekend duty";
+          td.title = "Weekend Support";
         }
       } else {
         // Physically available, no duty assigned to this staff today.
@@ -816,8 +852,8 @@ function exportToXLS(rows, counts, namesList, unavailable) {
     <th class="sumh">Colleague Name</th>
     <th class="sumh">Morning Health Check (08:45~)</th>
     <th class="sumh">Deployment</th>
-    <th class="sumh">Weekend Morning health check (08:45~)</th>
-    <th class="sumh">Not available</th>
+    <th class="sumh">Weekend Support</th>
+    <th class="sumh">Unavailable</th>
   </tr>
   ${summaryRows}
 </table>
@@ -827,8 +863,8 @@ function exportToXLS(rows, counts, namesList, unavailable) {
     <th class="mainh" style="background:#D9D9D9">Date</th>
     <th class="mainh" style="background:#DDEBF7">Morning Health Check (08:45~)</th>
     <th class="mainh" style="background:#E7E6E6">Deployment</th>
-    <th class="mainh" style="background:#DDEBF7">Weekend Morning health check (08:45~)</th>
-    <th class="mainh" style="background:#FCE4D6">Not available</th>
+    <th class="mainh" style="background:#DDEBF7">Weekend Support</th>
+    <th class="mainh" style="background:#FCE4D6">Unavailable</th>
   </tr>
   ${mainRows}
 </table>

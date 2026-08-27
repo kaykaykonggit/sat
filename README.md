@@ -18,11 +18,11 @@ Deploys as a static site to **Cloudflare Pages** (free) — no server, no backen
   per-person shift-count summary.
 - **Constraint-aware scheduler**:
   - Morning Health Check + Deployment on weekdays (Mon–Fri, excluding holidays).
-  - Weekend Morning Health Check on Sat/Sun/public holidays.
+  - Weekend Support on Sat/Sun/public holidays (no Morning/Deployment those days).
+  - **Balanced**: Morning, Deployment, and Weekend Support are each spread
+    evenly so every colleague gets a similar share of each shift type.
   - **A saved manual Deployment is honored on any day** — even a weekend or
-    holiday — so a colleague can be on duty Deployment while others cover the
-    weekend Morning check.
-  - Even distribution of all three shift types across colleagues.
+    holiday — so a colleague can be locked onto Deployment that day.
   - Rest rules: no Morning Health Check the day after a Deployment or a
     Weekend Support shift.
   - Weekend separation: Saturday and Sunday assigned to different people.
@@ -88,10 +88,10 @@ static page with no client-side routing.
 ## Exported file layout
 
 - **Summary table** (top): one row per colleague with totals for Morning,
-  Deployment, Weekend morning, and Not-available records. Gray header.
+  Deployment, Weekend Support, and Unavailable records. Gray header.
 - **Main schedule table** below it: rows per date labelled like
   `星期四 2026 07 23` (Chinese weekday + date); weekend/holiday dates get a
-  peach fill, the Not-available column turns orange when populated; all cells
+  peach fill, the Unavailable column turns orange when populated; all cells
   have thin borders and centered text.
 
 ## Project layout
