@@ -27,23 +27,34 @@
         <p class="hint">Comma- or newline-separated.</p>
       </fieldset>
 
-      <fieldset>
-        <legend>Public Holidays</legend>
-        <textarea id="holidays" rows="3" placeholder="2026-10-01, 2026-10-02"></textarea>
-        <p class="hint">YYYY-MM-DD, comma-separated.</p>
+      <fieldset class="unified-rec">
+        <legend>Add Record</legend>
+        <label for="rec-kind">Type</label>
+        <select id="rec-kind">
+          <option value="holiday">Holiday</option>
+          <option value="deploy">Manual Deployment</option>
+          <option value="morning">Manual Morning Health Check</option>
+          <option value="weekend">Manual Weekend Morning Health Check</option>
+        </select>
+        <label for="rec-line">Dates</label>
+        <input type="text" id="rec-line" placeholder="sep1,5,20-23  —  or  Andy: sep1,5" />
+        <button type="button" id="add-unified" class="primary">＋ Add Record</button>
+        <p class="hint">One entry at a time. Format <code>sep1,5,20-23</code> (month
+        abbr) or <code>Name: sep1,5</code>.<br />
+        <strong>Holiday</strong> with no name marks those dates as holidays; with a
+        name it also marks that colleague off work that day.<br />
+        Manual shifts <em>require</em> a name and lock that person in for those dates.
+        Deployment is honored even on weekends. Use ranges <code>7-20</code> or lists
+        <code>2,5,11</code>.</p>
+        <p id="hk-status" class="hint">HK holidays: loading…</p>
+        <p id="rec-unified-error" class="error"></p>
       </fieldset>
 
       <fieldset>
-        <legend>Unavailability</legend>
-        <label for="rec-name">Colleague</label>
-        <select id="rec-name"></select>
-        <label for="rec-date">Date</label>
-        <input type="date" id="rec-date" />
-        <label for="rec-note">Reason / Note</label>
-        <input type="text" id="rec-note" placeholder="Night, VL, TO, ..." />
-        <button type="button" id="add-rec" class="primary">＋ Add Record</button>
-        <p id="rec-error" class="error"></p>
-        <div id="records-list"></div>
+        <legend>Saved Records</legend>
+        <div id="records-list"><p class="muted">No records yet.</p></div>
+        <p class="hint">Holidays, unavailability, and manual shifts you add all appear
+        here. Use 🗑 to remove a record and re-solve the schedule.</p>
       </fieldset>
     </aside>
 
@@ -53,6 +64,26 @@
         <h1>📅 SAT — Shift Arrangement Tool</h1>
         <p class="subtitle">Generate an even, constraint-respecting duty schedule and export it to Excel.</p>
       </header>
+
+      <section id="matrix-panel" class="panel hidden">
+        <h3>Availability Matrix</h3>
+        <div id="matrix-legend" class="matrix-legend">
+          <span><i class="sw sw-unavail"></i>Unavailable</span>
+          <span><i class="sw sw-morning"></i>Morning</span>
+          <span><i class="sw sw-morning sw-manual"></i>Morning (manual)</span>
+          <span><i class="sw sw-deploy"></i>Deployment</span>
+          <span><i class="sw sw-deploy sw-manual"></i>Deployment (manual)</span>
+          <span><i class="sw sw-weekend"></i>Weekend duty</span>
+          <span><i class="sw sw-weekend sw-manual"></i>Weekend (manual)</span>
+          <span><i class="sw sw-avail"></i>Available</span>
+        </div>
+        <div class="table-scroll">
+          <table class="matrix">
+            <thead id="matrix-head"></thead>
+            <tbody id="matrix-body"></tbody>
+          </table>
+        </div>
+      </section>
 
       <section id="preview-wrap" class="panel hidden">
         <h3>Preview</h3>
@@ -91,13 +122,29 @@
 
       <section class="panel export-panel">
         <h3>Export</h3>
-        <button type="button" id="export-btn" class="primary big" disabled>
-          ⬇️ Download Excel Schedule
-        </button>
+        <div class="btn-row">
+          <button type="button" id="preview-xls-btn" class="outline big" disabled>
+            👁 Preview Excel
+          </button>
+          <button type="button" id="export-btn" class="primary big" disabled>
+            ⬇️ Download Excel Schedule
+          </button>
+        </div>
         <p class="hint">
-          Saves a styled Excel-compatible <code>.xls</code> file (no third-party
-          libraries — generated entirely in your browser).
+          <strong>Preview</strong> renders the exact styled HTML that will be
+          saved; <strong>Download</strong> saves the <code>.xls</code> file. No
+          third-party libraries — generated entirely in your browser.
         </p>
+      </section>
+
+      <section id="xls-preview-panel" class="panel hidden">
+        <div class="xls-preview-head">
+          <h3>Excel Preview</h3>
+          <button type="button" id="xls-preview-close" class="icon-btn" aria-label="Close preview">✕</button>
+        </div>
+        <div class="xls-preview-wrap">
+          <iframe id="xls-preview-area" title="Excel export preview"></iframe>
+        </div>
       </section>
     </main>
   </div>
