@@ -524,6 +524,7 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
     let morningManual = false;
     let deployment = "";
     let deploymentManual = false;
+    let overlap = false; // same colleague covers both Morning & Deployment today
 
     const manualDeployForDay = manualDeployment[day] && manualDeployment[day].name;
     if (manualDeployForDay && availableFor(manualDeployForDay)) {
@@ -569,21 +570,39 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
         }
       } else {
         // Fully auto: choose the (Deployment, Morning) pair that best balances
-        // BOTH counts. Minimise the larger predicted count first, then the total,
-        // so neither shift drifts.
+        // BOTH counts, preferring two DISTINCT people. Minimise the larger
+        // predicted count first, then the total, so neither shift drifts.
         const dPool = names.filter((n) => availableFor(n));
         const mPool = names.filter((n) => availableFor(n) && !cannotMorningToday.has(n));
         let bestD = "", bestM = "", bestScore = Infinity;
         for (const d of dPool) {
           for (const mm of mPool) {
-            if (d === mm) continue; // never the same person on both shifts
+            if (d === mm) continue; // prefer distinct people
             const depNext = counts[d].deployment + 1;
             const morNext = counts[mm].morning + 1;
             const score = Math.max(depNext, morNext) * 1000 + (depNext + morNext);
             if (score < bestScore) { bestScore = score; bestD = d; bestM = mm; }
           }
         }
+        if (bestM === "") {
+          // No two distinct people can cover both shifts today (e.g. only one
+          // colleague is available). As a last resort let ONE person do BOTH
+          // Morning and Deployment, and flag it so the UI shows it in red.
+          // The person must be morning-eligible (not rest-blocked) and available.
+          const overlapPool = names.filter((n) => availableFor(n) && !cannotMorningToday.has(n));
+          let bestOv = "", bestOvScore = Infinity;
+          for (const n of overlapPool) {
+            const depNext = counts[n].deployment + 1;
+            const morNext = counts[n].morning + 1;
+            const score = Math.max(depNext, morNext) * 1000 + (depNext + morNext);
+            if (score < bestOvScore) { bestOvScore = score; bestOv = n; }
+          }
+          if (bestOv !== "") {
+            bestD = bestOv; bestM = bestOv;
+          }
+        }
         if (bestM !== "") {
+          overlap = bestD === bestM;
           deployment = bestD; counts[deployment].deployment++;
           morning = bestM; counts[morning].morning++;
         }
@@ -631,6 +650,7 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
       morningManual,
       deployment,
       deploymentManual,
+      overlap,
       weekend,
       weekendManual,
       notAvailable: notes.join(", "),
@@ -661,6 +681,8 @@ function renderPreview(rows, namesList) {
         (i === 2 && r.deploymentManual) ||
         (i === 3 && r.weekendManual);
       if (manual) td.classList.add("deploy-manual");
+      // Same colleague covering both Morning and Deployment today: red text.
+      if (r.overlap && (i === 1 || i === 2)) td.classList.add("overlap-cell");
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
@@ -754,7 +776,12 @@ function renderMatrix(rows, namesList, unavailable) {
         td.title = `${name} unavailable (${dayNotes.join(", ")})`;
       } else if (row && row.morning === name) {
         td.classList.add("matrix-morning");
-        if (row.morningManual) {
+        if (row.overlap) {
+          // Same colleague covers Morning + Deployment today (last resort).
+          td.classList.add("matrix-overlap");
+          td.textContent = "M/D";
+          td.title = "Morning + Deployment (same person)";
+        } else if (row.morningManual) {
           td.classList.add("matrix-morning-manual");
           td.textContent = "M*";
           td.title = "Morning duty (manual)";
@@ -821,8 +848,9 @@ function exportToXLS(rows, counts, namesList, unavailable) {
   for (const r of rows) {
     const bg = r.isWeekend ? "background:#FBE5D6" : "";
     const naStyle = r.notAvailable ? "background:#FCE4D6" : "";
-    const mStyle = r.morningManual ? "font-weight:bold;" : "";
-    const depStyle = r.deploymentManual ? "font-weight:bold;" : "";
+    const overlapStyle = "color:#c0392b;font-weight:bold;";
+    const mStyle = r.overlap ? overlapStyle : (r.morningManual ? "font-weight:bold;" : "");
+    const depStyle = r.overlap ? overlapStyle : (r.deploymentManual ? "font-weight:bold;" : "");
     const wStyle = r.weekendManual ? "font-weight:bold;" : "";
     mainRows += `<tr style="border:1px solid #000">
       <td style="border:1px solid #000;padding:4px;font-weight:bold;${bg}">${esc(r.label)}</td>

@@ -238,6 +238,12 @@ td.avail-cell { background: var(--orange-fill); }
 /* Manual deployment override: bold text on the usual deployment cell fill. */
 td.deploy-manual { font-weight: 700; }
 
+/* Same colleague covers both Morning + Deployment on a day (last resort).
+   Highlight that overlap in red so it stands out immediately. */
+td.overlap-cell { color: var(--danger); font-weight: 700; }
+table.matrix .matrix-overlap { color: var(--danger); font-weight: 700; }
+.overlap-key { color: var(--danger); font-weight: 700; }
+
 /* ----------------------- Availability matrix ----------------------- */
 .matrix-legend {
   display: flex;
