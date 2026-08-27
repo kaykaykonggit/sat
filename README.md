@@ -9,13 +9,19 @@ Deploys as a static site to **Cloudflare Pages** (free) — no server, no backen
 
 ## Features
 
-- **Sidebar inputs**: date range, colleague names, public holidays, and a
-  per-person unavailability form (with a live records list + delete button).
+- **Single "Add Record" form**: one shift-kind selector plus one free-text
+  input powers everything — holidays, unavailability, and all three manual
+  shift locks — in the `Name: sep1,5,20-23` format (holidays need no name).
+- **Saved Records list**: every record you add appears below the form with a
+  🗑 delete button; removing one re-solves the schedule immediately.
 - **Live preview**: schedule renders as a table in the browser, plus a
   per-person shift-count summary.
 - **Constraint-aware scheduler**:
   - Morning Health Check + Deployment on weekdays (Mon–Fri, excluding holidays).
   - Weekend Morning Health Check on Sat/Sun/public holidays.
+  - **A saved manual Deployment is honored on any day** — even a weekend or
+    holiday — so a colleague can be on duty Deployment while others cover the
+    weekend Morning check.
   - Even distribution of all three shift types across colleagues.
   - Rest rules: no Morning Health Check the day after a Deployment or a
     Weekend Support shift.
@@ -66,9 +72,16 @@ static page with no client-side routing.
 1. Pick the **start / end dates** in the sidebar.
 2. Edit **colleague names** (comma- or newline-separated; defaults to
    `Andy, Jessica, Tina, Alan`).
-3. Add **public holidays** as `YYYY-MM-DD, ...` if any fall inside the range.
-4. Add **unavailability** records (colleague + date + reason such as `Night`,
-   `VL`, `TO`); they appear in a list below and can be deleted.
+3. Use **Add Record** to enter one entry at a time:
+   - **Holiday** — dates only, e.g. `sep7-9` (marks those days as closed).
+     Add a name, e.g. `Andy: sep7-9`, to also mark that colleague off work
+     those days.
+   - **Manual Deployment** — `Jessica: sep12` locks Jessica into Deployment
+     that date (honored even on a weekend).
+   - **Manual Morning** / **Manual Weekend** — `Tina: sep2,5,11` locks Tina in.
+   Dates are either month-abbreviated (`sep1,5,20-23`, ranges `7-20` allowed)
+   or full `YYYY-MM-DD`.
+4. Review **Saved Records** — they all show here with a 🗑 delete button.
 5. Review the **Preview** and **Shift Counts** tables.
 6. Click **⬇️ Download Excel Schedule** to save the `.xls`.
 

@@ -22,38 +22,63 @@ as plain static files.
 
 - `sat.js` keeps concerns in these exact functions:
   - **Parsing**: `parseNames`, `parseHolidays`, `needsWeekdayShift`,
-    `needsWeekendShift`, `dateLabel`, `isWeekendISO`.
-  - **Scheduler**: `buildSchedule(start, end, names, holidays, unavailable)`
-    -> `{ rows, counts }`. The only place shift-allocation rules live (even
-    distribution, rest rules, weekend separation, availability).
+    `needsWeekendShift`, `dateLabel`, `isWeekendISO`, `resolveDateExpr`,
+    `groupContiguous`, `parseManualShifts`, `parseManualDeployments`.
+  - **Derivation**: `deriveFromRecords(records, s, e)` maps the unified
+    `records` array into `{ holidaysAdded, unavailable, manualShifts }`. This is
+    the ONLY place records become engine inputs.
+  - **Scheduler**: `buildSchedule(start, end, names, holidays, unavailable,
+    manualShifts)` -> `{ rows, counts }`. The only place shift-allocation rules
+    live (even distribution, rest rules, weekend separation, availability,
+    manual-shift handling).
   - **Export**: `exportToXLS(rows, counts, names, unavailable)` -> HTML string;
     `downloadXLS(...)` wraps it in a Blob and triggers the download.
   - **UI/wiring**: `renderPreview`, `renderCounts`, `renderRecordsList`,
-    `init`. These are the only DOM-touching functions.
+    `submitUnifiedRecord`, `init`. These are the only DOM-touching functions.
 - `index.html`, `style.css` — shell and styling.
 - `wrangler.toml` — optional Cloudflare Pages config.
 
-Pure logic (`buildSchedule`, parsers, `exportToXLS`, date helpers) must stay
-DOM-free so they can run in Node for headless validation.
+Pure logic (`buildSchedule`, `deriveFromRecords`, parsers/date helpers via
+`resolveDateExpr`/`expandRange`, `exportToXLS`) must stay DOM-free so it can run
+in Node for headless validation.
 
 ## Key data shapes (do not change)
 
+- The engine inputs are produced by `deriveFromRecords` from the unified
+  `records` array. Each record is `{type, name, start, end, note}`:
+  - `type: 'holiday'` with `name` empty → those dates become holidays; with a
+    `name` → also `unavailable` for that person (note `"Holiday"`).
+  - `type: 'deploy' | 'morning' | 'weekend'` → a manual-shift lock for `name`
+    on those dates.
 - `unavailable` is `{ name: { iso: [note, ...] } }`, where `iso` is `"YYYY-MM-DD"`.
   A colleague is treated as unavailable on `(name, date)` regardless of note text.
+- `manualShifts` is `{ morning, deployment, weekend }`, each `{ iso: { name,
+  manual: true } }` — first wins per date. Passed as the 6th arg to
+  `buildSchedule`.
 - Dates are **ISO strings** (`"YYYY-MM-DD"`) everywhere in the engine, NOT JS
   `Date`, to avoid timezone bugs. Helpers: `dayPlus`, `isoWeekday`,
   `isWeekendISO`, `dateLabel`. `dateLabel` yields `星期四 2026 07 23`; keep the
   leading Chinese weekday.
 - Column/field keys in rows: `date`, `label`, `isWeekend`, `morning`,
-  `deployment`, `weekend`, `notAvailable`. Keep them identical between preview
-  and export strings.
+  `morningManual`, `deployment`, `deploymentManual`, `weekend`,
+  `weekendManual`, `notAvailable`. Keep them identical between preview and
+  export strings.
 
 ## Conventions & gotchas
 
-- Unavailability UI state is a module-level `records` array of
-  `{name, date, note}`; `updateAll()` converts it to the engine `unavailable`
-  shape on every render and rebuilds the preview + records list. Records are
-  in-memory only (reset on reload — no storage).
+- All user input flows through one **Add Record** form (`#rec-kind` +
+  `#rec-line`) into a module-level `records` array; each entry carries a `type`
+  as described above. The single recompute entry `updateAll()` calls
+  `deriveFromRecords(records, s, e)` to rebuild `unavailable`/`manualShifts`/
+  holidays, then re-renders the preview, counts, matrix, and records list.
+  Records are in-memory only (reset on reload — no storage).
+- **Deployment locks are honored on any day type** (weekend/holiday included).
+  A saved `deploy` record always puts that person in the Deployment column that
+  day; auto-Deployment runs on weekdays only. The auto Weekend-morning pool
+  excludes the day's deployment person so the same colleague is not
+  double-booked into both shifts that day.
+- Manual-shift records and holidays are deduped by
+  `{type}|{name}|{start}|{end}` when submitted; first manual lock wins per date.
 - Rest-rule bookkeeping must rebuild the block-set **each day** (a person from
   the prior day is blocked only for the next day's morning). It must NEVER
   accumulate across days — this was a real bug in the prototype.

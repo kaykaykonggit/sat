@@ -1,0 +1,2 @@
+[     385ms] [ERROR] Access to fetch at 'https://www.1823.gov.hk/common/ical/en.json' from origin 'http://localhost:8601' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource. @ http://localhost:8601/:0
+[     386ms] [ERROR] Failed to load resource: net::ERR_FAILED @ https://www.1823.gov.hk/common/ical/en.json:0
