@@ -32,6 +32,7 @@
         <label for="rec-kind">Type</label>
         <select id="rec-kind">
           <option value="holiday">Holiday</option>
+          <option value="unavailable">Unavailable</option>
           <option value="deploy">Manual Deployment</option>
           <option value="morning">Manual Morning Health Check</option>
           <option value="weekend">Manual Weekend Support</option>
@@ -43,6 +44,8 @@
         abbr) or <code>Name: sep1,5</code>.<br />
         <strong>Holiday</strong> with no name marks those dates as holidays; with a
         name it also marks that colleague off work that day.<br />
+        <strong>Unavailable</strong> marks a colleague off work (whole day) on those
+        dates — e.g. <code>Andy: sep1,5</code> — and shows in the Unavailable column.<br />
         Manual shifts <em>require</em> a name and lock that person in for those dates.
         Morning runs weekdays, <strong>Deployment</strong> runs weekdays only, and
         <strong>Weekend Support</strong> covers Sat/Sun/public holidays — each is kept

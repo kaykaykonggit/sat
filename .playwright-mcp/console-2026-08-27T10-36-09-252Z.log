@@ -1,0 +1,4 @@
+[     670ms] [ERROR] Access to fetch at 'https://www.1823.gov.hk/common/ical/en.json' from origin 'https://satpage.pages.dev' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource. @ https://satpage.pages.dev/:0
+[     671ms] [ERROR] Failed to load resource: net::ERR_FAILED @ https://www.1823.gov.hk/common/ical/en.json:0
+[  232756ms] [ERROR] Access to fetch at 'https://www.1823.gov.hk/common/ical/en.json' from origin 'http://localhost:8501' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource. @ http://localhost:8501/:0
+[  232757ms] [ERROR] Failed to load resource: net::ERR_FAILED @ https://www.1823.gov.hk/common/ical/en.json:0

@@ -370,6 +370,10 @@ function deriveFromRecords(records, s, e) {
       }
       // A named holiday also means that person is off work (unavailable).
       if (rec.name && rec.name.trim()) addUnavailable(rec.name, rec);
+    } else if (rec.type === "unavailable") {
+      // Explicit "Unavailable": that person is off work (whole day) on those
+      // dates. Unlike a named holiday, this does NOT make the date a holiday.
+      if (rec.name && rec.name.trim()) addUnavailable(rec.name, rec);
     } else if (rec.type === "deploy" || rec.type === "morning" || rec.type === "weekend") {
       const target = manualShifts[rec.type === "deploy" ? "deployment" : rec.type];
       let rs = rec.start, re = rec.end;
@@ -1096,6 +1100,8 @@ function renderRecordsList() {
      - Holiday, name-less    -> {type:'holiday', name:''} : dates become holidays
      - Holiday, named        -> {type:'holiday', name:X}  : dates are holidays
                                AND X is unavailable those days (off work)
+     - Unavailable           -> {type:'unavailable'}      : X is off work (whole day)
+                               on those dates (does NOT make the date a holiday)
      - Manual Deployment     -> {type:'deploy'}           : locks X into Deployment
      - Manual Morning        -> {type:'morning'}          : locks X into Morning
      - Manual Weekend        -> {type:'weekend'}          : locks X into Weekend
@@ -1104,10 +1110,11 @@ function renderRecordsList() {
    touching only; the parse helpers it calls are DOM-free. */
 function submitUnifiedRecord() {
   const err = document.getElementById("rec-unified-error");
-  const kind = document.getElementById("rec-kind").value; // holiday|deploy|morning|weekend
+  const kind = document.getElementById("rec-kind").value; // holiday|unavailable|deploy|morning|weekend
   const lineEl = document.getElementById("rec-line");
   const promptFor = {
     holiday: 'e.g. sep1,5,20-23 — or "Andy: sep1,5" to mark a colleague off that day (holiday).',
+    unavailable: "e.g. Andy: sep1,5 (that colleague is off work those days)",
     deploy: 'e.g. Andy: sep7-20 (dates are honored even on weekends)',
     morning: "e.g. Tina: sep2,5,11",
     weekend: "e.g. Tina: sep2,5,11",
@@ -1141,8 +1148,8 @@ function submitUnifiedRecord() {
     return;
   }
 
-  const type = { holiday: "holiday", deploy: "deploy", morning: "morning", weekend: "weekend" }[kind];
-  const note = kind === "holiday" ? "Holiday" : "";
+  const type = { holiday: "holiday", unavailable: "unavailable", deploy: "deploy", morning: "morning", weekend: "weekend" }[kind];
+  const note = kind === "holiday" ? "Holiday" : (kind === "unavailable" ? "Unavailable" : "");
   for (const r of groupContiguous(dates)) {
     const key = `${type}|${name}|${r.start}|${r.end}`;
     if (!records.some((x) => `${x.type}|${x.name}|${x.start}|${x.end}` === key)) {
