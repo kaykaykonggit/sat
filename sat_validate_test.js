@@ -204,5 +204,40 @@ console.log("== Rule-10 relief + m+d acceptance improves total spread on hard un
   check(andyMD >= 1 || relTot < baseTot, "m+d relief is available to the accepting colleague");
 }
 
+console.log("== Sudoku invariant: no required shift cell is left blank while a colleague is available ==");
+{
+  const names = ["Andy", "Jessica", "Tina", "Alan"];
+  const unavailable = { Andy: {}, Jessica: {}, Tina: {}, Alan: {} };
+  const mark = (p, iso) => { unavailable[p][iso] = ["Unavailable"]; };
+  E.expandRange("2026-09-05", "2026-09-20").forEach((d) => mark("Andy", d)); // Andy out 05..20
+  ["2026-09-02", "2026-09-12", "2026-09-16", "2026-09-18", "2026-09-19"].forEach((d) => mark("Jessica", d));
+  E.expandRange("2026-09-21", "2026-09-27").forEach((d) => mark("Jessica", d));
+  ["2026-09-02", "2026-09-05", "2026-09-11", "2026-09-18", "2026-09-19"].forEach((d) => mark("Tina", d));
+  E.expandRange("2026-09-25", "2026-09-27").forEach((d) => mark("Tina", d));
+  const hols = new Set();
+  const res = E.buildSchedule("2026-09-01", "2026-09-30", names, hols, unavailable, { morning: {}, deployment: {}, weekend: {} }, { mPlusDAccepted: new Set(["Andy"]) });
+  // Every weekend-shift day with >=1 available colleague must have a filled support cell.
+  let blanks = 0;
+  for (const r of res.rows) {
+    if (!r.isWeekend) continue;
+    const avail = names.filter((n) => !(unavailable[n] && unavailable[n][r.date]));
+    if (avail.length >= 1 && !r.weekend) blanks++;
+  }
+  check(blanks === 0, `no blank weekend-support cell when anyone is available (blanked ${blanks})`);
+  // The only-available-on-19-Sep colleague MUST cover it even after deploying 18-Sep.
+  const on19 = res.rows.find((r) => r.date === "2026-09-19");
+  const avail19 = names.filter((n) => !(unavailable[n] && unavailable[n]["2026-09-19"]));
+  check(on19 && avail19.length === 1 && on19.weekend === avail19[0], "sole available colleague on 2026-09-19 is forced onto Weekend Support");
+  // Workday side of the same invariant: any workday with >=1 available colleague
+  // must have BOTH Morning and Deployment filled (coverage over rest-rule/counters).
+  let wBlank = 0;
+  for (const r of res.rows) {
+    if (r.isWeekend) continue;
+    const avail = names.filter((n) => !(unavailable[n] && unavailable[n][r.date]));
+    if (avail.length >= 1 && (!r.morning || !r.deployment)) wBlank++;
+  }
+  check(wBlank === 0, `no workday with >=1 available misses Morning or Deployment (missed ${wBlank})`);
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

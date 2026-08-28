@@ -27,6 +27,13 @@ Deploys as a static site to **Cloudflare Pages** (free) — no server, no backen
   - **Successiveness**: weekend/holiday support is never given to the same
     person on two consecutive weekend-shift days (includes Sat != Sun, plus
     e.g. Sunday + the following public-holiday Monday).
+  - **Coverage-first ("Sudoku") rule**: a required shift cell is **never left
+    blank while any colleague is available**. Successiveness, the "differ from
+    yesterday's Deployment" rule, and same-day double-booking are *preferences* —
+    each is relaxed one level at a time so that the sole available colleague is
+    always assigned (e.g. the only free person covers a Saturday, or does both
+    Morning + Deployment, even if they worked the day before). Assignments that
+    required dropping a preference are flagged red for the staff to bear.
   - **Same-day Morning+Deployment relief**: colleagues listed in the
     "Same-day Morning + Deployment" box (default `Andy`) are allowed to pull
     both shifts on one day, acting as a relief valve when coverage is tight.

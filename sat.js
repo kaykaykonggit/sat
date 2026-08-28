@@ -640,8 +640,10 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
 
     let morning = "";
     let morningManual = false;
+    let morningForced = false;
     let deployment = "";
     let deploymentManual = false;
+    let weekendForced = false;
 
     const manualDeployForDay = manualDeployment[day] && manualDeployment[day].name;
     const deplLocked = manualDeployForDay && availableFor(manualDeployForDay);
@@ -664,9 +666,19 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
       // is blocked from today's Morning (Deployment carries no such tomorrow
       // block, so the deployment candidate pool is unaffected). A manual Morning
       // lock is still honored regardless.
-      const mCands = mornLocked
+      //
+      // "Sudoku" invariant: like the weekend fallback, the Morning cell on a
+      // workday is NEVER left blank while any colleague is available. If the
+      // rest rule empties the pool (e.g. the only available people all worked
+      // yesterday), we relax `cannotMorningToday` so the day still has a Morning
+      // Health Check; that relaxation is flagged as forced.
+      let mCands = mornLocked
         ? [manualMorningForDay]
         : names.filter((n) => availableFor(n) && !cannotMorningToday.has(n));
+      if (!mCands.length && !mornLocked) {
+        mCands = names.filter((n) => availableFor(n));
+        if (mCands.length) morningForced = true;
+      }
 
       // Scores each candidate pair. Per-shift BALANCE is the STRICT, non-negotiable
       // first priority (the user's stated primary goal). The evenness term is scaled
@@ -783,12 +795,33 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
             !violatedRule1(day, n) &&
             n !== prev
         );
-        // If the successiveness filter would leave nobody (rare hard-constraint
-        // clash), relax it so a Weekend Support person is still assigned.
+        // --- "Sudoku" invariant: a needed shift is ALWAYS filled whenever at
+        // least one colleague is available. The successiveness, Rule-1, and
+        // avoid-double-book filters are PREFERENCES that get relaxed, one level
+        // at a time, rather than ever leave the cell blank. Only hard
+        // unavailability wins over filling the cell. ----
+        weekendForced = false; 
         if (!pool.length) {
+          // Level 1: drop successiveness (only the adjacent-support clash is real).
           pool = names.filter(
             (n) => availableFor(n) && n !== deployment && !violatedRule1(day, n)
           );
+          if (pool.length) weekendForced = true;
+        }
+        if (!pool.length) {
+          // Level 2: drop successiveness AND yesterday's-Deployment rule, keep
+          // only the "nobody pulls both weekend + today's deployment" preference.
+          pool = names.filter(
+            (n) => availableFor(n) && n !== deployment
+          );
+          if (pool.length) weekendForced = true;
+        }
+        if (!pool.length) {
+          // Level 3 (absolute last resort): ANY available colleague carries the
+          // support, even if it means the same person is booked into Deployment
+          // too that day. Flagged red below for the staff to bear.
+          pool = names.filter((n) => availableFor(n));
+          if (pool.length) weekendForced = true;
         }
         if (pool.length) {
           // Per-scope fairness first (STRICT): the day's scope (wsat/wsun/hcount)
@@ -836,10 +869,12 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
       isWeekend: needsWeekendShift(day, holidays),
       morning,
       morningManual,
+      morningForced,
       deployment,
       deploymentManual,
       weekend,
       weekendManual,
+      weekendForced,
       notAvailable: notes.join(", "),
     });
   }
@@ -1111,17 +1146,21 @@ function validateAll(rows, names, unavailable) {
     }
     // Double-booking guard: a person may appear in Morning AND Deployment (the
     // documented last-resort), but never in the Weekend column together with
-    // either weekday duty.
-    if (r.weekend && (r.weekend === r.morning || r.weekend === r.deployment)) return false;
+    // either weekday duty. A FORCED weekend (only one colleague available) is a
+    // documented exception — the cell is filled even if it means a double-book.
+    if (r.weekend && (r.weekend === r.morning || r.weekend === r.deployment) && !r.weekendForced) return false;
   }
   // Rest rule + Rule 1 across consecutive days.
   for (const r of rows) {
     const py = byDay[dayPlus(r.date, -1)];
     if (!py) continue;
     // Rest rule: no Morning today by the person who did Deployment/Weekend yesterday.
-    if (r.morning && (py.deployment === r.morning || py.weekend === r.morning)) return false;
+    // A FORCED morning (only available people all worked yesterday) is exempt.
+    if (r.morning && (py.deployment === r.morning || py.weekend === r.morning) && !r.morningForced) return false;
     // Rule 1: Weekend Support today differs from yesterday's Deployment person.
-    if (r.weekend && py.deployment === r.weekend) return false;
+    // A FORCED weekend (only one colleague available) is exempt — the Sudoku rule
+    // says the sole available person MUST cover it even after deploying yesterday.
+    if (r.weekend && py.deployment === r.weekend && !r.weekendForced) return false;
   }
   // Successiveness ("h, wsat, wsun cannot be successive person"): the weekend-
   // support person on a weekend-shift day must differ from the support person on
@@ -1131,7 +1170,7 @@ function validateAll(rows, names, unavailable) {
   // (e.g. Sunday + Monday public holiday).
   for (let i = 0; i < rows.length - 1; i++) {
     const a = rows[i], b = rows[i + 1];
-    if (a.isWeekend && b.isWeekend && a.weekend && b.weekend && a.weekend === b.weekend) return false;
+    if (a.isWeekend && b.isWeekend && a.weekend && b.weekend && a.weekend === b.weekend && !(a.weekendForced || b.weekendForced)) return false;
   }
   return true;
 }

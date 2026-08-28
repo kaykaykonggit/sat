@@ -77,9 +77,9 @@ in Node for headless validation.
   `isWeekendISO`, `dateLabel`. `dateLabel` yields `星期四 2026 07 23`; keep the
   leading Chinese weekday.
 - Column/field keys in rows: `date`, `label`, `isWeekend`, `morning`,
-  `morningManual`, `deployment`, `deploymentManual`, `weekend`,
-  `weekendManual`, `notAvailable`. Keep them identical between preview and
-  export strings.
+  `morningManual`, `morningForced`, `deployment`, `deploymentManual`,
+  `weekend`, `weekendManual`, `weekendForced`, `notAvailable`. Keep them
+  identical between preview and export strings.
 
 ## Conventions & gotchas
 
@@ -99,6 +99,17 @@ in Node for headless validation.
 - Rest-rule bookkeeping must rebuild the block-set **each day** (a person from
   the prior day is blocked only for the next day's morning). It must NEVER
   accumulate across days — this was a real bug in the prototype.
+- **Coverage-first invariant ("Sudoku")**: a required shift cell (weekend
+  support on a weekend-shift day, or Morning/Deployment on a workday) is NEVER
+  left blank while any colleague is available. On each day the Successiveness,
+  Rule-1 (differ from yesterday's Deployment), rest-rule, and avoid-double-book
+  checks are relaxed one level at a time so the sole available colleague covers
+  the shift even if it breaks a preference. When a relaxation is needed the row
+  is flagged `morningForced`/`weekendForced`, and `validateAll` CARVES OUT those
+  forced rows (exempts them from the rule they broke) so the post-passes
+  (`rebalance`, `reduceFatigue`, `rule10Pass`) are not disabled by a legitimate
+  forced assignment and do not try to "fix" it back into a blank. Availability
+  remains the only hard, never-relaxed constraint.
 - Weekend detection reuses `needsWeekendShift` (Sat/Sun **and** holidays get
   the peach tile/`#FBE5D6`). Not-available cells turn orange `#FCE4D6`.
 - `updateAll()` is the single "recompute everything" entry — every input change
