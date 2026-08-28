@@ -29,8 +29,9 @@ as plain static files.
     the ONLY place records become engine inputs.
   - **Scheduler**: `buildSchedule(start, end, names, holidays, unavailable,
     manualShifts)` -> `{ rows, counts }`. The only place shift-allocation rules
-    live (even distribution, rest rules, weekend separation, availability,
-    manual-shift handling).
+    live (per-scope even distribution on m/d/t/wsat/wsun/h, rest rules,
+    weekend successiveness across adjacent weekend-shift days, availability,
+    manual-shift handling, Rule-10 total-shift balancing).
   - **Export**: `exportToXLS(rows, counts, names, unavailable)` -> HTML string;
     `downloadXLS(...)` wraps it in a Blob and triggers the download.
   - **UI/wiring**: `renderPreview`, `renderCounts`, `renderRecordsList`,
@@ -55,6 +56,20 @@ in Node for headless validation.
 - `manualShifts` is `{ morning, deployment, weekend }`, each `{ iso: { name,
   manual: true } }` — first wins per date. Passed as the 6th arg to
   `buildSchedule`.
+- `counts[n]` per colleague carries SIX independent fairness scopes plus two
+  derived totals:
+  `{ morning, deployment, thursday, wsat, wsun, hcount, weekend, total }`.
+  `weekend = wsat + wsun + hcount` and `total = morning + deployment + weekend`
+  are always kept consistent with the leaves (see `addCount`/`syncDerivedCounts`).
+  - `morning` = morning health check.
+  - `deployment` = any deployment day (incl. Thursdays).
+  - `thursday` = deployments falling on Thursday only (its own fair scope `t`).
+  - `wsat`/`wsun` = Weekend Support on Saturday/Sunday respectively.
+  - `hcount` = Weekend Support on a holiday that falls on a weekday (Mon–Fri).
+  Fairness balances EACH scope independently (its own 1_000_000-weighted evenness),
+  so "4 Saturdays / N staff" is split evenly without being diluted by Sundays.
+  `weekendScope(iso, holidays)` → `'wsat' | 'wsun' | 'hcount'` classifies a
+  weekend-shift day; only call it on days where `needsWeekendShift` is true.
 - Dates are **ISO strings** (`"YYYY-MM-DD"`) everywhere in the engine, NOT JS
   `Date`, to avoid timezone bugs. Helpers: `dayPlus`, `isoWeekday`,
   `isWeekendISO`, `dateLabel`. `dateLabel` yields `星期四 2026 07 23`; keep the

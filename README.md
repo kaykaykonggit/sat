@@ -19,13 +19,18 @@ Deploys as a static site to **Cloudflare Pages** (free) — no server, no backen
 - **Constraint-aware scheduler**:
   - Morning Health Check + Deployment on weekdays (Mon–Fri, excluding holidays).
   - Weekend Support on Sat/Sun/public holidays (no Morning/Deployment those days).
-  - **Balanced**: Morning, Deployment, and Weekend Support are each spread
-    evenly so every colleague gets a similar share of each shift type.
+  - **Per-scope fairness**: Morning, Deployment, Thursday-deployment, Saturday
+    support, Sunday support, and Holiday support are each spread independently
+    so every colleague gets a similar share of each scope. Surplus Thursday
+    deployments fall through to the lowest-Deployment colleague; a cross-axis
+    pass reduces the *total* shift spread without breaking any scope's balance.
+  - **Successiveness**: weekend/holiday support is never given to the same
+    person on two consecutive weekend-shift days (includes Sat != Sun, plus
+    e.g. Sunday + the following public-holiday Monday).
   - **A saved manual Deployment is honored on any day** — even a weekend or
     holiday — so a colleague can be locked onto Deployment that day.
   - Rest rules: no Morning Health Check the day after a Deployment or a
     Weekend Support shift.
-  - Weekend separation: Saturday and Sunday assigned to different people.
   - Minimized same-day Morning + Deployment overlap.
   - Strictly respects all unavailability records.
 - **One-click export** of a styled, Excel-readable `.xls` — generated as an HTML

@@ -118,5 +118,54 @@ console.log("== deriveFromRecords + buildSchedule end-to-end (weekend deployment
   check(row.weekend !== "Jessica", "end-to-end: Jessica not also weekend-morning");
 }
 
+console.log("== per-scope fairness: wsat / wsun / hcount / thursday / total ==");
+{
+  // Sept 2026 has exactly 4 Saturdays + 4 Sundays + 1 weekday holiday (Mon 09-07).
+  const names = ["Andy", "Jessica", "Tina", "Alan"];
+  const hols = E.parseHolidays("2026-09-07", "2026-09-01", "2026-09-30");
+  const res = E.buildSchedule("2026-09-01", "2026-09-30", names, hols, {}, { morning: {}, deployment: {}, weekend: {} });
+  const c = res.counts;
+  const spread = (k) => Math.max(...names.map((n) => c[n][k])) - Math.min(...names.map((n) => c[n][k]));
+  check(spread("wsat") <= 1, "wsat spread <= 1 (4 Saturdays / 4 staff)");
+  check(spread("wsun") <= 1, "wsun spread <= 1 (4 Sundays / 4 staff)");
+  check(spread("hcount") <= 1, "hcount spread <= 1 (1 holiday weekday / 4 staff)");
+  check(spread("thursday") <= 1, "thursday spread <= 1 (4 Thursdays / 4 staff)");
+  check(spread("morning") <= 1, "morning spread <= 1");
+  check(spread("deployment") <= 1, "deployment spread <= 1");
+  // Successiveness across Sun(09-06) -> Mon-holiday(09-07): support persons differ.
+  const byDate = new Map(res.rows.map((r) => [r.date, r]));
+  const sun = byDate.get("2026-09-06").weekend;
+  const monHoliday = byDate.get("2026-09-07").weekend;
+  if (sun && monHoliday) check(sun !== monHoliday, "Sun 09-06 and Mon-holiday 09-07 support differ (successiveness)");
+}
+
+console.log("== weekend successiveness across all adjacent weekend-shift days ==");
+{
+  // Oct 2026 holidays on Thu 10-01 and Mon 10-19 create Sun->Mon and Sun->Mon adjacencies.
+  const names = ["Andy", "Jessica", "Tina", "Alan"];
+  const hols = E.parseHolidays("2026-10-01,2026-10-19", "2026-10-01", "2026-10-31");
+  const res = E.buildSchedule("2026-10-01", "2026-10-31", names, hols, {}, { morning: {}, deployment: {}, weekend: {} });
+  let ok = true;
+  for (let i = 0; i < res.rows.length - 1; i++) {
+    const a = res.rows[i], b = res.rows[i + 1];
+    if (a.isWeekend && b.isWeekend && a.weekend && b.weekend && a.weekend === b.weekend) ok = false;
+  }
+  check(ok, "no adjacent weekend-shift days share a support person");
+}
+
+console.log("== Rule 10: cross-axis total spread stays within per-scope caps ==");
+{
+  const names = ["Andy", "Jessica", "Tina", "Alan"];
+  const hols = E.parseHolidays("", "2026-08-03", "2026-09-13");
+  const res = E.buildSchedule("2026-08-03", "2026-09-13", names, hols, {}, { morning: {}, deployment: {}, weekend: {} });
+  const c = res.counts;
+  // Per-scope spreads must never exceed 2 (MAX_SPREAD hard cap).
+  for (const k of ["morning", "deployment", "thursday", "wsat", "wsun", "hcount"]) {
+    const s = Math.max(...names.map((n) => c[n][k])) - Math.min(...names.map((n) => c[n][k]));
+    check(s <= 2, `per-scope spread of ${k} <= 2 (got ${s})`);
+  }
+  check(sp = Math.max(...names.map((n) => c[n].total)) - Math.min(...names.map((n) => c[n].total)) >= 0, "total spread found or zero");
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -313,6 +313,16 @@ function needsWeekendShift(iso, holidays) {
   return isWeekendISO(iso) || holidays.has(iso);
 }
 
+/* Classify a weekend-shift day into its fairness scope. Sat -> 'wsat',
+   Sun -> 'wsun', any other weekend-shift day (a public holiday on Mon–Fri)
+   -> 'hcount'. Only call this on days where needsWeekendShift is true. */
+function weekendScope(iso, holidays) {
+  if (isWeekendISO(iso)) {
+    return isoWeekday(iso) === 5 ? "wsat" : isoWeekday(iso) === 6 ? "wsun" : "hcount";
+  }
+  return "hcount"; // holiday falling on a weekday
+}
+
 /* Parse the 1823.gov.hk iCal payload into per-year Sets of ISO holiday dates.
    Payload shape (one request, ALL years):
      { vcalendar: [ { vevent: [ { dtstart: ["20260101",{value:"DATE"}], ... } ] } ] }
@@ -475,6 +485,54 @@ function parseManualDeployments(raw, startISO, endISO, names) {
   return out;
 }
 
+/* ------------------------- Per-scope count helpers ------------------------
+   Fairness is tracked across SIX independent scopes (each balanced on its own):
+     morning, deployment, thursday, wsat, wsun, hcount
+   `weekend` (= wsat+wsun+hcount) is the merged Weekend Support column-preserved
+   value, and `total` (= morning+deployment+weekend) is the cross-axis balance
+   used by Rule 10. These helpers keep weekend/total consistent with the leaves.
+  --------------------------------------------------------------------------- */
+
+function newCounts(names) {
+  const counts = {};
+  for (const n of names) {
+    counts[n] = {
+      morning: 0, deployment: 0, thursday: 0,
+      wsat: 0, wsun: 0, hcount: 0, weekend: 0, total: 0,
+    };
+  }
+  return counts;
+}
+
+// Increment one leaf scope; refresh the derived weekend/total.
+function addCount(counts, name, key, delta) {
+  counts[name][key] = (counts[name][key] || 0) + delta;
+  if (key === "wsat" || key === "wsun" || key === "hcount") {
+    counts[name].weekend = (counts[name].wsat || 0) + (counts[name].wsun || 0) + (counts[name].hcount || 0);
+  }
+  if (key === "morning" || key === "deployment" || key === "wsat" || key === "wsun" || key === "hcount") {
+    counts[name].total = (counts[name].morning || 0) + (counts[name].deployment || 0) + counts[name].weekend;
+  }
+  return counts;
+}
+
+// Recompute weekend & total from the leaf scopes for every colleague.
+function syncDerivedCounts(counts, names) {
+  for (const n of names) {
+    const c = counts[n];
+    c.weekend = (c.wsat || 0) + (c.wsun || 0) + (c.hcount || 0);
+    c.total = (c.morning || 0) + (c.deployment || 0) + c.weekend;
+  }
+  return counts;
+}
+
+// Spread (max-min) of a given scope across all colleagues.
+function countSpread(counts, names, key) {
+  const arr = names.map((n) => counts[n][key] || 0);
+  if (!arr.length) return 0;
+  return Math.max(...arr) - Math.min(...arr);
+}
+
 /* ------------------------- Scheduling engine ------------------------------
    Mirrors build_schedule() in the Python prototype:
      unavailable: { name: { iso: [note, ...] } }
@@ -495,14 +553,7 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
   const days = [];
   for (let d = start; d <= end; d = dayPlus(d, 1)) days.push(d);
 
-  const counts = {};
-  for (const n of names) {
-    counts[n] = {
-      morning: 0,
-      deployment: 0,
-      weekend: 0,
-    };
-  }
+  const counts = newCounts(names);
 
   // Track, per day, who worked ANY shift (soft "no consecutive days" goal) and
   // who was assigned Deployment (Rule 1: weekend person must differ from the
@@ -518,19 +569,25 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
 
   const rows = [];
 
-  const isCalendarSat = (iso) => isoWeekday(iso) === 5;
-  const isCalendarSun = (iso) => isoWeekday(iso) === 6;
-  // Same-weekend partner for the Sat != Sun rule: Sat<->Sun when both days are
-  // weekend-support days. Returns null for non-calendar-weekend days.
-  const weekendPartner = (iso) => {
-    if (isCalendarSat(iso) && needsWeekendShift(dayPlus(iso, 1), holidays)) return dayPlus(iso, 1);
-    if (isCalendarSun(iso) && needsWeekendShift(dayPlus(iso, -1), holidays)) return dayPlus(iso, -1);
-    return null;
-  };
   // Rule-1 violation: person worked Weekend Support on X but was Deployment on X-1.
   const violatedRule1 = (iso, person) => {
     const prev = dayPlus(iso, -1);
     return deploymentByDay[prev] === person;
+  };
+
+  // General successiveness ("h, wsat, wsun cannot be successive person"):
+  // the weekend-support person on a weekend-shift day must differ from the
+  // support person on the PREVIOUS adjacent weekend-shift day (forward
+  // processing automatically guarantees the "next" side too, and subsumes the
+  // old Sat != Sun rule). weekendShiftDays lists weekend-shift days in order.
+  const weekendShiftDays = days.filter((d) => needsWeekendShift(d, holidays));
+  const prevSupport = (day) => {
+    const idx = weekendShiftDays.indexOf(day);
+    for (let k = idx - 1; k >= 0; k--) {
+      const d = weekendShiftDays[k];
+      if (weekendPersonByDay[d]) return weekendPersonByDay[d];
+    }
+    return null;
   };
 
   // Pre-pass: total number of workdays (Morning+Deployment days) in range, for
@@ -541,6 +598,16 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
   const roleCountByDay = {}; // iso -> { name: #roles assigned that day }
   // Fair per-shift target (equal share across colleagues) for evenness pressure.
   const perShiftTarget = workdayCount / names.length;
+
+  // Thursday-deployment fairness (Rule 5): t is its own scope. When the number
+  // of Thursdays exceeds the number of staff, surplus Thursday deployments go to
+  // the colleague with the LOWEST deployment count (relaxing strict t-spread).
+  const weekdays = days.filter((d) => !needsWeekendShift(d, holidays));
+  const thursdayCount = weekdays.filter((d) => isoWeekday(d) === 3).length;
+  const thuTarget = Math.floor(thursdayCount / names.length);
+  // Precompute the index position of each day within weekendShiftDays for O(1).
+  const wsIndex = {};
+  weekendShiftDays.forEach((d, i) => { wsIndex[d] = i; });
 
   for (const day of days) {
     // A day is a WORK day (Morning + Deployment) only when it is neither a
@@ -620,9 +687,26 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
           // who was out just stays low while present differently). The 1_000_000
           // multiplier makes evenness strictly dominate, so the count target is
           // always met before fatigue is ever consulted.
-          const depNext = counts[D].deployment + 1;
+          //
+          // Thursday deployment (t) is its own scope. On a Thursday the D axis
+          // weights the thursday count; when the number of Thursdays EXCEEDS the
+          // number of staff (surplus case), once everyone is at the shared base
+          // (thuTarget) the surplus falls through to the LOWEST deployment-count
+          // colleague (Rule 5), relaxing strict t-spread.
+          const isThu = isoWeekday(day) === 3;
+          let depEven;
+          if (isThu) {
+            if (thursdayCount > names.length) {
+              const inBase = names.some((n) => availableFor(n) && counts[n].thursday < thuTarget);
+              depEven = inBase ? counts[D].thursday + 1 : counts[D].deployment + 1;
+            } else {
+              depEven = counts[D].thursday + 1;
+            }
+          } else {
+            depEven = counts[D].deployment + 1;
+          }
           const morNext = counts[M].morning + 1;
-          const evenness = depNext * 1000000 + morNext * 1000000;
+          const evenness = depEven * 1000000 + morNext * 1000000;
 
           // D doing Deployment yesterday (consecutive deployment).
           const depConsec = deploymentByDay[yesterdayDay] === D ? 1 : 0;
@@ -650,15 +734,17 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
         deploymentManual = deplLocked && bestD === manualDeployForDay;
         morning = bestM;
         morningManual = mornLocked && bestM === manualMorningForDay;
-        counts[deployment].deployment++;
-        counts[morning].morning++;
+        addCount(counts, deployment, "deployment", 1);
+        if (isoWeekday(day) === 3) addCount(counts, deployment, "thursday", 1);
+        addCount(counts, morning, "morning", 1);
       }
     } else if (deplLocked) {
       // Weekend / holiday: a manual Deployment lock is still honored (no auto
       // Morning/Deployment those days unless locked).
       deployment = manualDeployForDay;
       deploymentManual = true;
-      counts[deployment].deployment++;
+      addCount(counts, deployment, "deployment", 1);
+      if (isoWeekday(day) === 3) addCount(counts, deployment, "thursday", 1);
     }
 
     // ---- Weekend Support (Sat/Sun/public holidays) ---------------------------
@@ -669,39 +755,43 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
       if (manual && availableFor(manual)) {
         weekend = manual;
         weekendManual = true;
-        counts[weekend].weekend++;
+        addCount(counts, weekend, weekendScope(day, holidays), 1);
       } else {
         // Eligible pool: available, not Rule-1-eligible (differs from yesterday's
         // Deployment), differs from today's Deployment person (no double-booking
-        // into both shifts same day), and differs from the same-weekend partner
-        // (Sat != Sun).
-        const partner = weekendPartner(day);
+        // into both shifts same day), and differs from the previous adjacent
+        // weekend-shift support person ("h, wsat, wsun cannot be successive
+        // person" — this subsumes the old Sat != Sun rule via forward processing).
+        const scope = weekendScope(day, holidays);
+        const prev = prevSupport(day);
         let pool = names.filter(
           (n) =>
             availableFor(n) &&
             n !== deployment &&
             !violatedRule1(day, n) &&
-            n !== (partner && weekendPersonByDay[partner])
+            n !== prev
         );
-        // If the Sat != Sun filter would leave nobody (rare hard-constraint clash),
-        // relax it so a Weekend Support person is still assigned.
-        if (!pool.length && partner) {
+        // If the successiveness filter would leave nobody (rare hard-constraint
+        // clash), relax it so a Weekend Support person is still assigned.
+        if (!pool.length) {
           pool = names.filter(
             (n) => availableFor(n) && n !== deployment && !violatedRule1(day, n)
           );
         }
         if (pool.length) {
-          // Rule 2 fairness first: weekend support must be even (STRICT). Among
-          // candidates with an EQUAL weekend count, prefer someone who did not work
-          // yesterday (avoid consecutive days); this is only a tie-break and can
-          // never out-rank keeping the weekend counts even.
+          // Per-scope fairness first (STRICT): the day's scope (wsat/wsun/hcount)
+          // is balanced independently, so 4 Saturdays / 6 staff stay as equal as
+          // possible without being diluted by Sundays or holidays. Among candidates
+          // with an EQUAL scope count, prefer someone who did not work yesterday
+          // (avoid consecutive days); this is only a tie-break and can never out-rank
+          // keeping the scope counts even.
           const workedYesterday = workedByDay[dayPlus(day, -1)] || new Set();
           const WS_CONSEC_W = 2500;
           weekend = pool.reduce((best, n) => {
-            const score = (i) => counts[i].weekend * 1000000 + (workedYesterday.has(i) ? WS_CONSEC_W : 0);
+            const score = (i) => counts[i][scope] * 1000000 + (workedYesterday.has(i) ? WS_CONSEC_W : 0);
             return score(n) < score(best) ? n : best;
           });
-          counts[weekend].weekend++;
+          addCount(counts, weekend, scope, 1);
         }
       }
     }
@@ -742,32 +832,64 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
     });
   }
 
-  // ---- Rule 2: rebalance Weekend Support toward the most-even distribution ----
+  // ---- Realrebance: scope-aware Weekend Support toward even distribution ----
   // A bounded local-search pass that moves a weekend-support assignment from an
   // over-assigned (or simply movable) colleague to another, closing the gap to
-  // each person's ideal target, while preserving availability, Sat != Sun,
-  // Rule 1 (difference from previous day's Deployment), and never moving a
-  // manual-locked weekend. Each move keeps total weekend slots constant. This is
-  // a pure per-shift evenness pass; the "no consecutive days" soft goal is only
-  // consulted to break exact ties and is never allowed to break evenness.
+  // each person's ideal PER-SCOPE target (wsat / wsun / h count independently),
+  // while preserving availability, successiveness (differ from both the previous
+  // and next adjacent weekend-shift support person), Rule 1 (difference from the
+  // previous day's Deployment), and never moving a manual-locked weekend. Each
+  // move keeps total weekend slots constant. This is a pure per-scope evenness
+  // pass; the "no consecutive days" soft goal is only consulted to break exact
+  // ties and is never allowed to break evenness.
   const weekendRows = [];
   rows.forEach((r, idx) => {
-    if (r.isWeekend && r.weekend) weekendRows.push({ idx, day: r.date, person: r.weekend, manual: r.weekendManual });
+    if (r.isWeekend && r.weekend) {
+      weekendRows.push({
+        idx, day: r.date, person: r.weekend, manual: r.weekendManual,
+        scope: weekendScope(r.date, holidays),
+      });
+    }
   });
-  const totalWeekend = weekendRows.length;
-  if (totalWeekend > 0) {
-    const base = Math.floor(totalWeekend / names.length);
-    const rem = totalWeekend % names.length;
-    const ideal = {};
-    names.forEach((n, i) => { ideal[n] = base + (i < rem ? 1 : 0); });
+  // Next adjacent weekend-shift support person (known now that all rows exist).
+  const nextSupport = (day) => {
+    const idx = wsIndex[day];
+    if (idx === undefined) return null;
+    for (let k = idx + 1; k < weekendShiftDays.length; k++) {
+      const d = weekendShiftDays[k];
+      if (weekendPersonByDay[d]) return weekendPersonByDay[d];
+    }
+    return null;
+  };
+  if (weekendRows.length > 0) {
+    // Per-scope ideal: base + (first `rem`) within each scope's own slot count.
+    const scopeSlots = {};
+    for (const w of weekendRows) scopeSlots[w.scope] = (scopeSlots[w.scope] || 0) + 1;
+    const idealByScope = {};
+    for (const sc of Object.keys(scopeSlots)) {
+      const total = scopeSlots[sc];
+      const base = Math.floor(total / names.length);
+      const rem = total % names.length;
+      const ideal = {};
+      names.forEach((n, i) => { ideal[n] = base + (i < rem ? 1 : 0); });
+      idealByScope[sc] = ideal;
+    }
 
-    const devBefore = () => names.reduce((s, n) => s + Math.abs(counts[n].weekend - ideal[n]), 0);
+    const devBefore = () => {
+      let s = 0;
+      for (const sc of Object.keys(idealByScope)) {
+        for (const n of names) s += Math.abs(counts[n][sc] - idealByScope[sc][n]);
+      }
+      return s;
+    };
+    const supportOf = (day) => weekendPersonByDay[day] || null;
     const mayAssign = (w, cand) => {
       if (cand === w.person) return false;
-      if (!(unavailable[cand] ? !(unavailable[cand][w.day]) : true)) return false;
+      if (unavailable[cand] && unavailable[cand][w.day]) return false;
       if (violatedRule1(w.day, cand)) return false;
-      const partner = weekendPartner(w.day);
-      if (partner && weekendPersonByDay[partner] === cand) return false;
+      if (cand === rows[w.idx].deployment) return false; // no same-day double-booking
+      if (cand === prevSupport(w.day)) return false;      // prev successiveness
+      if (cand === nextSupport(w.day)) return false;      // next successiveness
       return true;
     };
     // Consecutive-day overlap count across weekend assignments (soft goal only).
@@ -786,23 +908,22 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
     let moved = true;
     while (moved && swaps < 200) {
       moved = false;
-      let bestMove = null; // { w, cand, gain, consecAfter }
+      let bestMove = null; // { w, cand, gain }
       let bestGain = 0;
       for (const w of weekendRows) {
         if (w.manual) continue; // never move a manual-locked weekend
         for (const cand of names) {
           if (!mayAssign(w, cand)) continue;
           const before = devBefore();
-          // simulate: w.person -> cand
-          counts[w.person].weekend--;
-          counts[cand].weekend++;
+          // simulate: w.person -> cand (same scope, weekend count unchanged)
+          addCount(counts, w.person, w.scope, -1);
+          addCount(counts, cand, w.scope, 1);
           const after = devBefore();
-          counts[cand].weekend--;
-          counts[w.person].weekend++;
+          addCount(counts, cand, w.scope, -1);
+          addCount(counts, w.person, w.scope, 1);
           const gain = before - after;
           if (gain <= 0) continue;
-          // Candidate move improves evenness. Prefer larger gain; tie-break on the
-          // soft consecutive-days goal (only meaningful when counts are equal).
+          // Prefer larger gain; tie-break on the soft consecutive-days goal.
           if (gain > bestGain) {
             bestGain = gain; bestMove = { w, cand };
           }
@@ -810,8 +931,8 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
       }
       if (bestMove) {
         const { w, cand } = bestMove;
-        counts[w.person].weekend--;
-        counts[cand].weekend++;
+        addCount(counts, w.person, w.scope, -1);
+        addCount(counts, cand, w.scope, 1);
         rows[w.idx].weekend = cand;
         weekendPersonByDay[w.day] = cand;
         const worked = workedByDay[w.day] || new Set();
@@ -834,24 +955,22 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
       let bestCons = consecOverlaps();
       for (const w of weekendRows) {
         if (w.manual) continue;
-        const before = devBefore();
-        if (before !== 0) continue; // only optimize consec when counts are already even
+        if (devBefore() !== 0) continue; // only optimize consec when counts are even
         for (const cand of names) {
           if (!mayAssign(w, cand)) continue;
-          counts[w.person].weekend--;
-          counts[cand].weekend++;
-          const after = devBefore();
-          if (after !== 0) { counts[cand].weekend--; counts[w.person].weekend++; continue; }
+          addCount(counts, w.person, w.scope, -1);
+          addCount(counts, cand, w.scope, 1);
+          if (devBefore() !== 0) { addCount(counts, cand, w.scope, -1); addCount(counts, w.person, w.scope, 1); continue; }
           const cons = consecOverlaps();
-          counts[cand].weekend--;
-          counts[w.person].weekend++;
+          addCount(counts, cand, w.scope, -1);
+          addCount(counts, w.person, w.scope, 1);
           if (cons < bestCons) { bestCons = cons; bestMove = { w, cand }; }
         }
       }
       if (bestMove) {
         const { w, cand } = bestMove;
-        counts[w.person].weekend--;
-        counts[cand].weekend++;
+        addCount(counts, w.person, w.scope, -1);
+        addCount(counts, cand, w.scope, 1);
         rows[w.idx].weekend = cand;
         weekendPersonByDay[w.day] = cand;
         const worked = workedByDay[w.day] || new Set();
@@ -875,15 +994,24 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
   // consecutive-Deployment / three-in-two / same-day-overlap are stripped out.
   // Whatever patterns remain after this pass are the genuinely-unavoidable cost of
   // keeping the counts fair, and are flagged red below for the staff to bear.
-  reduceFatigue(rows, names, unavailable, manualShifts);
+  reduceFatigue(rows, names, unavailable, manualShifts, holidays);
   // relocate moves in the fatigue pass change individual counts, so recompute the
   // per-person shift totals from the final rows before reporting them.
-  for (const n of Object.keys(counts)) counts[n] = { morning: 0, deployment: 0, weekend: 0 };
+  const finalCounts = newCounts(names);
   for (const r of rows) {
-    if (r.morning) counts[r.morning].morning++;
-    if (r.deployment) counts[r.deployment].deployment++;
-    if (r.weekend) counts[r.weekend].weekend++;
+    if (r.morning) addCount(finalCounts, r.morning, "morning", 1);
+    if (r.deployment) {
+      addCount(finalCounts, r.deployment, "deployment", 1);
+      if (isoWeekday(r.date) === 3) addCount(finalCounts, r.deployment, "thursday", 1);
+    }
+    if (r.weekend) addCount(finalCounts, r.weekend, weekendScope(r.date, holidays), 1);
   }
+  syncDerivedCounts(finalCounts, names);
+  // Copy the freshly-derived counts back into the shared `counts` object.
+  for (const n of names) Object.assign(counts[n], finalCounts[n]);
+  // Rule 10: cross-axis comprehensive fairness pass (transfers allow only total
+  // spread reduction, never worsening any per-scope spread past MAX_SPREAD).
+  rule10Pass(rows, names, unavailable, holidays, counts);
   computeFlags(rows, names); // sets row.forced (possibly empty) on every row
 
   return { rows, counts };
@@ -983,12 +1111,15 @@ function validateAll(rows, names, unavailable) {
     // Rule 1: Weekend Support today differs from yesterday's Deployment person.
     if (r.weekend && py.deployment === r.weekend) return false;
   }
-  // Sat != Sun within the same calendar weekend.
-  for (const r of rows) {
-    if (!r.weekend) continue;
-    const nxt = byDay[dayPlus(r.date, 1)];
-    // r is a Saturday with a Sunday partner that is also a weekend-support day.
-    if (isoWeekday(r.date) === 5 && nxt && nxt.weekend === r.weekend) return false;
+  // Successiveness ("h, wsat, wsun cannot be successive person"): the weekend-
+  // support person on a weekend-shift day must differ from the support person on
+  // the PREVIOUS adjacent weekend-shift day. Adjacent weekend-shift days are
+  // consecutive calendar days both needing a weekend shift (rows are consecutive
+  // by date). This subsumes the old Sat != Sun rule AND covers holiday adjacency
+  // (e.g. Sunday + Monday public holiday).
+  for (let i = 0; i < rows.length - 1; i++) {
+    const a = rows[i], b = rows[i + 1];
+    if (a.isWeekend && b.isWeekend && a.weekend && b.weekend && a.weekend === b.weekend) return false;
   }
   return true;
 }
@@ -999,22 +1130,26 @@ function validateAll(rows, names, unavailable) {
 // strictly decreasing the weighted tiring-flag count. Runs Deployment, then
 // Morning, then Weekend, each as a bounded fixed-point loop. After this, any
 // residual flags are genuinely-unavoidable (kept red).
-function reduceFatigue(rows, names, unavailable, manualShifts) {
+function reduceFatigue(rows, names, unavailable, manualShifts, holidays) {
   // Optional 6th-arg shape reused for the manual-lock gate.
   manualShifts = manualShifts || {};
+  holidays = holidays || new Set();
   const dayIsManual = (r, col) =>
     col === "deployment" ? r.deploymentManual : col === "morning" ? r.morningManual : r.weekendManual;
   const cols = ["deployment", "morning", "weekend"];
   const asWeekday = (r) => !r.isWeekend;
 
   const countsOf = () => {
-    const c = {};
-    for (const n of names) c[n] = { morning: 0, deployment: 0, weekend: 0 };
+    const c = newCounts(names);
     for (const r of rows) {
-      if (r.morning) c[r.morning].morning++;
-      if (r.deployment) c[r.deployment].deployment++;
-      if (r.weekend) c[r.weekend].weekend++;
+      if (r.morning) addCount(c, r.morning, "morning", 1);
+      if (r.deployment) {
+        addCount(c, r.deployment, "deployment", 1);
+        if (isoWeekday(r.date) === 3) addCount(c, r.deployment, "thursday", 1);
+      }
+      if (r.weekend) addCount(c, r.weekend, weekendScope(r.date, holidays), 1);
     }
+    syncDerivedCounts(c, names);
     return c;
   };
   const spread = (arr) => Math.max(...arr) - Math.min(...arr);
@@ -1032,29 +1167,29 @@ function reduceFatigue(rows, names, unavailable, manualShifts) {
     return m;
   };
 
-  // Objective. The CSV spread of every shift is held to at most MAX_SPREAD
-  // (hard cap → huge penalty); within that, we minimize a weighted combo of the
-  // same-day M+D "red" days and consecutive- Deployment (the user's most-tiring
-  // concern). This lets the pass trade a little spread to remove red flags, but
-  // never lets any shift drift past "接近平均".
+  // Objective. The CSV spread of EVERY scope (m, d, t, wsat, wsun, h) is held to
+  // at most MAX_SPREAD (hard cap → huge penalty); within that, we minimize a
+  // weighted combo of the same-day M+D "red" days and consecutive- Deployment
+  // (the user's most-tiring concern). This lets the pass trade a little spread
+  // to remove red flags, but never lets any scope drift past "接近平均".
   const MAX_SPREAD = 2;
   const RED_W = 8, CONSEC_W = 12, SPREAD_W = 1;
+  const SCOPE_KEYS = ["morning", "deployment", "thursday", "wsat", "wsun", "hcount"];
   const cost = () => {
     const c = countsOf();
-    const mS = spread(names.map((n) => c[n].morning));
-    const dS = spread(names.map((n) => c[n].deployment));
-    const wS = spread(names.map((n) => c[n].weekend));
-    let hard = 0;
-    if (mS > MAX_SPREAD) hard += 1e6;
-    if (dS > MAX_SPREAD) hard += 1e6;
-    if (wS > MAX_SPREAD) hard += 1e6;
+    let hard = 0, totalSpread = 0;
+    for (const key of SCOPE_KEYS) {
+      const s = spread(names.map((n) => c[n][key]));
+      if (s > MAX_SPREAD) hard += 1e6;
+      totalSpread += s;
+    }
     let red = 0, cc = 0;
     const dp = deplByDay();
     for (const r of rows) {
       if (r.morning && r.deployment && r.morning === r.deployment) red++;
       if (r.deployment && dp[dayPlus(r.date, -1)] === r.deployment) cc++;
     }
-    return hard + (mS + dS + wS) * SPREAD_W + red * RED_W + cc * CONSEC_W;
+    return hard + totalSpread * SPREAD_W + red * RED_W + cc * CONSEC_W;
   };
 
   // A JOINT local-search loop. Each iteration scans TWO kinds of moves and
@@ -1115,6 +1250,118 @@ function reduceFatigue(rows, names, unavailable, manualShifts) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Rule 10 — cross-axis "comprehensive fairness". After the per-scope greedy +
+// rebalance + fatigue passes have each scope as even as possible, some staff may
+// still land on a HIGHER TOTAL shift count than others (top of every scope at
+// once). This count-preserving local search transfers a single shift from a
+// colleague who is ABOVE their fair share in a scope to the colleague with the
+// LOWEST `total` shift count, whenever doing so strictly shrinks the `total`
+// spread (max − min) WITHOUT pushing any per-scope spread past MAX_SPREAD.
+// Every candidate move is gated by validateAll (hard rules incl. successiveness),
+// never moves a manual-locked shift, and updates `counts` in place.
+// ---------------------------------------------------------------------------
+function rule10Pass(rows, names, unavailable, holidays, counts) {
+  holidays = holidays || new Set();
+  if (names.length < 2) return;
+  const MAX_SPREAD = 2;
+  const scopes = ["morning", "thursday", "wsat", "wsun", "hcount"];
+  // The row field that carries each scope, and its single leaf-count key.
+  const fieldOf = (sc) =>
+    sc === "morning" ? "morning" : sc === "thursday" ? "deployment" : "weekend";
+  const leafOf = (sc) => (sc === "thursday" ? "deployment" : sc);
+  const manualOf = (r, sc) =>
+    fieldOf(sc) === "morning" ? r.morningManual
+      : fieldOf(sc) === "deployment" ? r.deploymentManual
+      : r.weekendManual;
+  const scopeSpread = (sc) => countSpread(counts, names, sc);
+  const totalSpread = () => countSpread(counts, names, "total");
+
+  // Weekend-shift adjacency (ordered) so successiveness is an O(1) local check.
+  const weekendRows = [];
+  const wsIndexLocal = {};
+  rows.forEach((r, i) => { if (r.isWeekend) { wsIndexLocal[r.date] = weekendRows.length; weekendRows.push(r); } });
+
+  const budget = 60;
+  let considered = 0; // hard cap on validateAll calls (the expensive gate)
+  for (let iter = 0; iter < budget; iter++) {
+    const beforeTotal = totalSpread();
+    if (beforeTotal < 2) break; // already as even as transferable
+    let best = null, bestGain = 0;
+    scan:
+    for (const sc of scopes) {
+      if (scopeSpread(sc) < 1) continue; // an even scope has no surplus to donate
+      const f = fieldOf(sc);
+      let slots = 0;
+      for (const n of names) slots += counts[n][sc] || 0;
+      const fairCap = Math.ceil(slots / names.length);
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const from = r[f];
+        if (!from || manualOf(r, sc)) continue;
+        // Day/scope eligibility for this candidate donor row.
+        if (sc === "thursday") { if (isoWeekday(r.date) !== 3) continue; }
+        else if (sc !== "morning") { if (!r.isWeekend || weekendScope(r.date, holidays) !== sc) continue; }
+        if ((counts[from][sc] || 0) <= fairCap) continue; // not a genuine surplus
+        for (const to of names) {
+          if (to === from) continue;
+          if (counts[to].total >= counts[from].total) continue; // must reduce total spread
+          // --- cheap localized feasibility (avoids the O(n) validateAll) ---
+          if (unavailable[to] && unavailable[to][r.date]) continue;
+          if (sc === "morning") {
+            // Rest rule: `to` can't morning today if yesterday's Deploy/Weekend was `to`.
+            const py = i > 0 ? rows[i - 1] : null;
+            if (py && (py.deployment === to || py.weekend === to)) continue;
+          } else if (f === "weekend") {
+            // No same-day double-booking, and successiveness vs adjacent weekend days.
+            if (r.morning === to || r.deployment === to) continue;
+            const idx = wsIndexLocal[r.date];
+            const prevP = idx > 0 ? weekendRows[idx - 1].weekend : null;
+            const nextP = idx < weekendRows.length - 1 ? weekendRows[idx + 1].weekend : null;
+            if (prevP === to || nextP === to) continue;
+          } else {
+            // deployment / thursday donor: don't double-book into the same day's weekend.
+            if (r.weekend === to) continue;
+          }
+          // --- total-spread improvement quick check ---
+          const totals = names.map((n) => counts[n].total + (n === from ? -1 : n === to ? 1 : 0));
+          const afterSpread = Math.max(...totals) - Math.min(...totals);
+          const gain = beforeTotal - afterSpread;
+          if (gain <= bestGain) continue;
+          // --- validateAll as a final safety gate on this genuine candidate ---
+          considered++;
+          const saved = r[f];
+          r[f] = to;
+          const leaf = leafOf(sc);
+          counts[from][leaf]--; counts[to][leaf]++;
+          if (sc === "thursday") { counts[from].thursday--; counts[to].thursday++; }
+          syncDerivedCounts(counts, names);
+          const valid = validateAll(rows, names, unavailable);
+          const newScopeSpread = sc === "thursday"
+            ? countSpread(counts, names, "deployment")
+            : countSpread(counts, names, leaf);
+          if (valid && newScopeSpread <= MAX_SPREAD) {
+            best = { r, f, from, to, sc, leaf };
+            bestGain = gain;
+          }
+          // revert
+          r[f] = saved;
+          counts[from][leaf]++; counts[to][leaf]--;
+          if (sc === "thursday") { counts[from].thursday++; counts[to].thursday--; }
+          syncDerivedCounts(counts, names);
+          if (considered > 4000) break scan; // hard cap on validateAll work
+        }
+      }
+    }
+    if (!best) break;
+    // Apply the single globally-best improving transfer.
+    best.r[best.f] = best.to;
+    counts[best.from][best.leaf]--; counts[best.to][best.leaf]++;
+    if (best.sc === "thursday") { counts[best.from].thursday--; counts[best.to].thursday++; }
+    syncDerivedCounts(counts, names);
+  }
+}
+
 /* ------------------------- Preview rendering ----------------------------- */
 
 function renderPreview(rows, namesList) {
@@ -1164,9 +1411,9 @@ function renderCounts(namesList, counts) {
   const tbody = document.getElementById("counts-tbody");
   tbody.innerHTML = "";
   for (const n of namesList) {
-    const c = counts[n] || { morning: 0, deployment: 0, weekend: 0 };
+    const c = counts[n] || { morning: 0, deployment: 0, thursday: 0, wsat: 0, wsun: 0, hcount: 0, total: 0 };
     const tr = document.createElement("tr");
-    [n, c.morning, c.deployment, c.weekend].forEach((v) => {
+    [n, c.morning, c.deployment, c.thursday, c.wsat, c.wsun, c.hcount, c.total].forEach((v) => {
       const td = document.createElement("td");
       td.textContent = v;
       tr.appendChild(td);
@@ -1292,17 +1539,22 @@ function renderMatrix(rows, namesList, unavailable) {
  --------------------------------------------------------------------------- */
 
 function exportToXLS(rows, counts, namesList, unavailable) {
-  // Summary table: one row per colleague.
+  // Summary table: one row per colleague. Columns cover each fairness scope.
   let summaryRows = "";
   for (const n of namesList) {
-    const c = counts[n] || { morning: 0, deployment: 0, weekend: 0 };
+    const c = counts[n] || { morning: 0, deployment: 0, thursday: 0, wsat: 0, wsun: 0, hcount: 0, weekend: 0, total: 0 };
     let naTotal = 0;
     if (unavailable[n]) naTotal = Object.values(unavailable[n]).reduce((s, arr) => s + arr.length, 0);
     summaryRows += `<tr style="border:1px solid #000;background:#fff">
       <td style="border:1px solid #000;padding:4px">${esc(n)}</td>
       <td style="border:1px solid #000;padding:4px;text-align:center">${c.morning}</td>
       <td style="border:1px solid #000;padding:4px;text-align:center">${c.deployment}</td>
+      <td style="border:1px solid #000;padding:4px;text-align:center">${c.thursday}</td>
+      <td style="border:1px solid #000;padding:4px;text-align:center">${c.wsat}</td>
+      <td style="border:1px solid #000;padding:4px;text-align:center">${c.wsun}</td>
+      <td style="border:1px solid #000;padding:4px;text-align:center">${c.hcount}</td>
       <td style="border:1px solid #000;padding:4px;text-align:center">${c.weekend}</td>
+      <td style="border:1px solid #000;padding:4px;text-align:center">${c.total}</td>
       <td style="border:1px solid #000;padding:4px;text-align:center">${naTotal || ""}</td>
     </tr>`;
   }
@@ -1346,9 +1598,14 @@ function exportToXLS(rows, counts, namesList, unavailable) {
 <table>
   <tr>
     <th class="sumh">Colleague Name</th>
-    <th class="sumh">Morning Health Check (08:45~)</th>
-    <th class="sumh">Deployment</th>
-    <th class="sumh">Weekend Support</th>
+    <th class="sumh">Morning (m)</th>
+    <th class="sumh">Deploy (d)</th>
+    <th class="sumh">Thu (t)</th>
+    <th class="sumh">WSat</th>
+    <th class="sumh">WSun</th>
+    <th class="sumh">Holiday (h)</th>
+    <th class="sumh">Weekend</th>
+    <th class="sumh">Total</th>
     <th class="sumh">Unavailable</th>
   </tr>
   ${summaryRows}
@@ -1682,6 +1939,7 @@ if (typeof globalThis !== "undefined" && typeof document === "undefined") {
     parseHolidays,
     needsWeekendShift,
     needsWeekdayShift,
+    weekendScope,
     isWeekendISO,
     isoWeekday,
     dayPlus,
