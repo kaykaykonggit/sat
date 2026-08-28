@@ -238,6 +238,14 @@ td.avail-cell { background: var(--orange-fill); }
 /* Manual deployment override: bold text on the usual deployment cell fill. */
 td.deploy-manual { font-weight: 700; }
 
+/* Forced-tiring day: the counts-fairness rule left no rest-compliant alternative,
+   so this staff must bear a consecutive / double / overload pattern. Red. */
+td.flag-cell { background: #f8d7da; color: #842029; font-weight: 700; }
+td.flag-date { background: #f8d7da; color: #842029; }
+tr.weekend-row td.flag-date { background: #f8d7da; color: #842029; }
+table.matrix td.matrix-flag { background: #f8d7da; color: #842029; font-weight: 700; }
+.sw-flag { background: #f8d7da; border-color: #842029; }
+
 /* ----------------------- Availability matrix ----------------------- */
 .matrix-legend {
   display: flex;

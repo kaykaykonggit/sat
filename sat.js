@@ -521,6 +521,15 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
     return deploymentByDay[prev] === person;
   };
 
+  // Pre-pass: total number of workdays (Morning+Deployment days) in range, for
+  // the per-shift evenness target. Also maintain a per-day role count per person
+  // so the "3 shifts within a rolling 2-day window" (tandem overload) can be
+  // detected — a follow-up day's assignment is evaluated against what happened.
+  const workdayCount = days.filter((day) => !needsWeekendShift(day, holidays)).length;
+  const roleCountByDay = {}; // iso -> { name: #roles assigned that day }
+  // Fair per-shift target (equal share across colleagues) for evenness pressure.
+  const perShiftTarget = workdayCount / names.length;
+
   for (const day of days) {
     // A day is a WORK day (Morning + Deployment) only when it is neither a
     // calendar weekend nor a public holiday. Holidays — even when they fall on
@@ -553,12 +562,14 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
 
     // ---- Workday shifts: Morning Health Check + Deployment -----------------
     // On a workday (Mon–Fri, not a public holiday) Morning and Deployment are
-    // chosen TOGETHER as the (Deployment D, Morning M) pair that keeps BOTH
-    // counts most even, preserving the pure evenness metric. A manual
-    // Deployment/Morning lock (when the person is available) fixes that slot.
-    // D and M MAY be the same person (overlap is now a normal, un-flagged tool).
-    // Among equally-even pairs we prefer the one whose people did not work the
-    // previous calendar day (soft "no consecutive days" goal).
+    // chosen TOGETHER as the (Deployment D, Morning M) pair. The PURE per-shift
+    // evenness metric (max*1000+sum) keeps both counts balanced, and on top of
+    // that we STRONGLY prefer to avoid a colleague working consecutive calendar
+    // days (especially Deployment is tiring: it runs after the workday), and we
+    // prefer two DISTINCT people (Morning != Deployment) so one person does not
+    // pull BOTH shifts. The consecutive-days preference is weighted so it can
+    // out-rank a small evenness gap (a returning colleague still catches up, but
+    // spread out) — only a big count imbalance can force consecutive work.
     if (weekdayShift) {
       const dCands = deplLocked ? [manualDeployForDay] : names.filter((n) => availableFor(n));
       // Hard rest rule: a person who did Deployment or Weekend Support yesterday
@@ -569,25 +580,56 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
         ? [manualMorningForDay]
         : names.filter((n) => availableFor(n) && !cannotMorningToday.has(n));
 
-      let bestD = "", bestM = "", bestScore = Infinity, bestConsec = Infinity;
-      const yesterdayWorked = workedByDay[dayPlus(day, -1)] || new Set();
+      // Scores each candidate pair. Per-shift BALANCE is the STRICT, non-negotiable
+      // first priority (the user's stated primary goal). The evenness term is scaled
+      // so that a single shift-count deviation (1_000_000) is far larger than the
+      // sum of ALL fatigue penalties (< 10_000), so fatigue can ONLY break an exact
+      // count tie, never out-rank a count imbalance. We still try hard, as the
+      // tie-break, to avoid the tiring patterns — consecutive Deployment, a single
+      // person pulling >=3 shifts in 2 days, consecutive calendar-day work, and a
+      // same-day Morning+Deployment double — but each only kicks in among equally
+      // even candidates. Any residual fatigue we cannot remove this way is a FORCED
+      // cost of keeping the counts fair, and is flagged red for the staff to bear.
+      const DEPCONS_W = 2500; // D did Deployment yesterday (consecutive deploy)
+      const TANDEM_W = 3000;  // a single person would reach >=3 shifts in 2 days
+      const CONSEC_W = 1500;  // general: a person in this pair worked yesterday
+      const SAME_W = 1000;    // D===M same-day overlap: mildly disliked
+
+      let bestD = "", bestM = "", bestTotal = Infinity;
+      const yesterdayDay = dayPlus(day, -1);
+      const yesterdayWorked = workedByDay[yesterdayDay] || new Set();
+      const yesterdayRoles = roleCountByDay[yesterdayDay] || {};
       for (const D of dCands) {
         for (const M of mCands) {
+          // Per-shift evenness: independent axes, least-count. Deployment balance only
+          // considers Deployment counts; Morning balance only Morning counts. The
+          // person with the fewest shifts of that type is preferred, which keeps
+          // each shift even and naturally respects unequal availability (someone
+          // who was out just stays low while present differently). The 1_000_000
+          // multiplier makes evenness strictly dominate, so the count target is
+          // always met before fatigue is ever consulted.
           const depNext = counts[D].deployment + 1;
           const morNext = counts[M].morning + 1;
-          const score = Math.max(depNext, morNext) * 1000 + (depNext + morNext);
-          // Soft "no consecutive days" tie-break: fewer distinct people who worked yesterday.
+          const evenness = depNext * 1000000 + morNext * 1000000;
+
+          // D doing Deployment yesterday (consecutive deployment).
+          const depConsec = deploymentByDay[yesterdayDay] === D ? 1 : 0;
+
+          // Would any single person reach >=3 shifts across today+yesterday?
+          const tandemD = (yesterdayRoles[D] || 0) + (D === M ? 2 : 1);
+          const tandemM = (yesterdayRoles[M] || 0) + 1;
+          const tandem = tandemD >= 3 || tandemM >= 3 ? 1 : 0;
+
           const consec = (yesterdayWorked.has(D) ? 1 : 0) + (D !== M && yesterdayWorked.has(M) ? 1 : 0);
-          // Prefer two DISTINCT people (Morning != Deployment) so a weekday's work is
-          // shared — the same person doing both is still allowed, but only comes to
-          // break a consecutive-days tie or when availability forces it.
-          const distinct = D !== M;
-          const better =
-            score < bestScore ||
-            (score === bestScore && consec < bestConsec) ||
-            (score === bestScore && consec === bestConsec && distinct && bestD === bestM);
-          if (better) {
-            bestScore = score; bestD = D; bestM = M; bestConsec = consec;
+          const same = D === M ? 1 : 0;
+          const total =
+            evenness +
+            DEPCONS_W * depConsec +
+            TANDEM_W * tandem +
+            CONSEC_W * consec +
+            SAME_W * same;
+          if (total < bestTotal) {
+            bestTotal = total; bestD = D; bestM = M;
           }
         }
       }
@@ -637,16 +679,15 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
           );
         }
         if (pool.length) {
-          // Rule 2 fairness first — pick the lowest weekend count; tie-break with
-          // the soft "no consecutive days" goal (avoid someone who worked yesterday).
+          // Rule 2 fairness first: weekend support must be even (STRICT). Among
+          // candidates with an EQUAL weekend count, prefer someone who did not work
+          // yesterday (avoid consecutive days); this is only a tie-break and can
+          // never out-rank keeping the weekend counts even.
           const workedYesterday = workedByDay[dayPlus(day, -1)] || new Set();
+          const WS_CONSEC_W = 2500;
           weekend = pool.reduce((best, n) => {
-            const cb = counts[best].weekend;
-            const cn = counts[n].weekend;
-            const consecutiveBest = workedYesterday.has(best) ? 1 : 0;
-            const consecutiveN = workedYesterday.has(n) ? 1 : 0;
-            if (cn !== cb) return cn < cb ? n : best;
-            return consecutiveN < consecutiveBest ? n : best;
+            const score = (i) => counts[i].weekend * 1000000 + (workedYesterday.has(i) ? WS_CONSEC_W : 0);
+            return score(n) < score(best) ? n : best;
           });
           counts[weekend].weekend++;
         }
@@ -662,6 +703,13 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
     if (workedToday.size) workedByDay[day] = workedToday;
     if (deployment) deploymentByDay[day] = deployment;
     if (weekend) weekendPersonByDay[day] = weekend;
+
+    // Role count per person today (1 or 2 when someone does both Morning +
+    // Deployment). Used by the next day's tandem-overload check.
+    roleCountByDay[day] = {};
+    if (morning) roleCountByDay[day][morning] = (roleCountByDay[day][morning] || 0) + 1;
+    if (deployment) roleCountByDay[day][deployment] = (roleCountByDay[day][deployment] || 0) + 1;
+    if (weekend) roleCountByDay[day][weekend] = (roleCountByDay[day][weekend] || 0) + 1;
 
     // Rebuild the hard rest rule for tomorrow: today's Deployment and Weekend
     // Support people are blocked from tomorrow's Morning Health Check. Rebuilt
@@ -805,7 +853,176 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
     }
   }
 
+  // ---- Count-preserving fatigue reduction ----------------------------------
+  // Strict evenness (already enforced by the greedy) guarantees each per-shift
+  // count is as even as possible. That greedy can, however, create AVOIDABLE
+  // tiring orderings (e.g. a returning colleague scheduled for Deployment several
+  // days running to "catch up"). reduceFatigue() relocates which DAY a person
+  // works a given shift column between two dates — never changing how many of that
+  // column they work — so final counts (and thus evenness) stay identical, while
+  // consecutive-Deployment / three-in-two / same-day-overlap are stripped out.
+  // Whatever patterns remain after this pass are the genuinely-unavoidable cost of
+  // keeping the counts fair, and are flagged red below for the staff to bear.
+  reduceFatigue(rows, names, unavailable, manualShifts);
+  computeFlags(rows, names); // sets row.forced (possibly empty) on every row
+
   return { rows, counts };
+}
+
+// ---------------------------------------------------------------------------
+// Self-contained helpers for the post-pass. They re-derive every needed map from
+// the `rows` array, so they never fall out of sync with the schedule.
+// ---------------------------------------------------------------------------
+
+// Rebuild the per-day role-count map { iso -> { name: #duties } } for the
+// "too many shifts in 2 days" check.
+function rolesByDayFromRows(rows) {
+  const map = {};
+  for (const r of rows) {
+    map[r.date] = {};
+    if (r.morning) map[r.date][r.morning] = (map[r.date][r.morning] || 0) + 1;
+    if (r.deployment) map[r.date][r.deployment] = (map[r.date][r.deployment] || 0) + 1;
+    if (r.weekend) map[r.date][r.weekend] = (map[r.date][r.weekend] || 0) + 1;
+  }
+  return map;
+}
+
+// Detect every tiring pattern on every row and write the human-readable "must
+// bear it" message into row.forced. Also return the total weighted flag count,
+// which the swap loop uses as its strictly-decreasing objective (consecutive
+// Deployment is the most-tiring, hence heaviest weight).
+function computeFlags(rows, names) {
+  const roleMap = rolesByDayFromRows(rows);
+  const deplByDay = {};
+  for (const r of rows) if (r.deployment) deplByDay[r.date] = r.deployment;
+  let total = 0;
+  for (const r of rows) {
+    const forced = [];
+    // 1. Same-day Morning + Deployment by one person.
+    if (r.morning && r.deployment && r.morning === r.deployment) {
+      forced.push(`${r.morning} bears both Morning Health Check & Deployment this day (no fair alternative).`);
+    }
+    // 2. >=3 duties by one person across two consecutive days.
+    const prev = dayPlus(r.date, -1);
+    if (prev && roleMap[prev]) {
+      const mine = roleMap[prev] || {};
+      const today = roleMap[r.date] || {};
+      for (const n of names) {
+        const two = (mine[n] || 0) + (today[n] || 0);
+        if (two >= 3) {
+          forced.push(`${n} bears ${two} shifts across ${dateLabel(r.date)} & the previous day.`);
+          total += 2;
+        }
+      }
+    }
+    // 3. Consecutive Deployment (today + yesterday).
+    if (r.deployment && deplByDay[prev] === r.deployment) {
+      forced.push(`${r.deployment} deploys on consecutive days — tiring (after-hours duty).`);
+      total += 3;
+    }
+    if (r.morning && r.deployment && r.morning === r.deployment) total += 1;
+    r.forced = forced;
+  }
+  return total;
+}
+
+// Drain every hard rule across the whole range. Returns true only when the
+// current schedule is fully valid. This is deliberately a full-range check run
+// on candidate swaps (O(days x staff) — trivial for a ≤31-day schedule) so we
+// NEVER hand-reason per-field swap validity, which is where correctness bugs hide.
+function validateAll(rows, names, unavailable) {
+  const byDay = {};
+  for (const r of rows) byDay[r.date] = r;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const duties = [r.morning, r.deployment, r.weekend].filter(Boolean);
+    // Availability.
+    for (const n of duties) {
+      if (unavailable[n] && unavailable[n][r.date]) return false;
+    }
+    // Day-type: Morning/Deployment only on weekdays (not holidays/weekends);
+    // Weekend only on weekend/holiday days.
+    if (r.isWeekend) {
+      if (r.morning) return false;
+      if (r.deployment && !r.deploymentManual) return false;
+      if (!r.weekend && duties.length) return false; // weekend day must not hold M/D
+    } else {
+      if (r.weekend && !r.weekendManual) return false;
+    }
+    // Double-booking guard: a person may appear in Morning AND Deployment (the
+    // documented last-resort), but never in the Weekend column together with
+    // either weekday duty.
+    if (r.weekend && (r.weekend === r.morning || r.weekend === r.deployment)) return false;
+  }
+  // Rest rule + Rule 1 across consecutive days.
+  for (const r of rows) {
+    const py = byDay[dayPlus(r.date, -1)];
+    if (!py) continue;
+    // Rest rule: no Morning today by the person who did Deployment/Weekend yesterday.
+    if (r.morning && (py.deployment === r.morning || py.weekend === r.morning)) return false;
+    // Rule 1: Weekend Support today differs from yesterday's Deployment person.
+    if (r.weekend && py.deployment === r.weekend) return false;
+  }
+  // Sat != Sun within the same calendar weekend.
+  for (const r of rows) {
+    if (!r.weekend) continue;
+    const nxt = byDay[dayPlus(r.date, 1)];
+    // r is a Saturday with a Sunday partner that is also a weekend-support day.
+    if (isoWeekday(r.date) === 5 && nxt && nxt.weekend === r.weekend) return false;
+  }
+  return true;
+}
+
+// Count-preserving local-search pass: relocate WHICH day a person works a given
+// shift column between two non-manual days (a 2-way swap), keeping every person's
+// per-shift total identical (so final evenness is provably untouched), while
+// strictly decreasing the weighted tiring-flag count. Runs Deployment, then
+// Morning, then Weekend, each as a bounded fixed-point loop. After this, any
+// residual flags are genuinely-unavoidable (kept red).
+function reduceFatigue(rows, names, unavailable, manualShifts) {
+  // Optional 6th-arg shape reused for the manual-lock gate.
+  manualShifts = manualShifts || {};
+  const dayIsManual = (r, col) =>
+    col === "deployment" ? r.deploymentManual : col === "morning" ? r.morningManual : r.weekendManual;
+
+  // A JOINT local-search loop (not per-column fixed points). Each iteration scans
+  // candidate 2-way swaps in ALL three columns and applies the single globally
+  // best one. Cross-column interference is why this matters: an improvement in
+  // the Morning column can later unlock a Deployment-column improvement (and vice
+  // versa), which a sequential per-column pass would miss. Bounded iterations
+  // guarantee it always finishes quickly in the browser.
+  const COLS = ["deployment", "morning", "weekend"];
+  const budget = 300;
+  for (let iter = 0; iter < budget; iter++) {
+    const before = computeFlags(rows, names);
+    let best = null; // { ia, ib, col, total }
+    for (const col of COLS) {
+      // Candidate days that can host this column: deployment/morning on weekday
+      // rows, weekend on weekend/holiday rows.
+      const hosts = rows
+        .map((r, i) => ({ r, i }))
+        .filter(({ r }) => (col === "weekend" ? r.isWeekend : !r.isWeekend))
+        .filter(({ r }) => Boolean(r[col]) && !dayIsManual(r, col));
+      for (let a = 0; a < hosts.length; a++) {
+        for (let b = a + 1; b < hosts.length; b++) {
+          const ra = hosts[a].r, rb = hosts[b].r, ia = hosts[a].i, ib = hosts[b].i;
+          if (ra[col] === rb[col]) continue; // nothing to swap
+          const va = ra[col], vb = rb[col];
+          ra[col] = vb; rb[col] = va;
+          const ok = validateAll(rows, names, unavailable);
+          const t = ok ? computeFlags(rows, names) : Infinity;
+          ra[col] = va; rb[col] = vb; // revert probe
+          if (t < before && t < (best ? best.total : Infinity)) {
+            best = { ia, ib, col, total: t };
+          }
+        }
+      }
+    }
+    if (!best) break; // fixed point: no strict improvement in any column
+    const ra = rows[best.ia], rb = rows[best.ib];
+    const va = ra[best.col], vb = rb[best.col];
+    ra[best.col] = vb; rb[best.col] = va; // apply
+  }
 }
 
 /* ------------------------- Preview rendering ----------------------------- */
@@ -817,6 +1034,7 @@ function renderPreview(rows, namesList) {
   for (const r of rows) {
     const tr = document.createElement("tr");
     if (r.isWeekend) tr.className = "weekend-row";
+    const flagged = (r.forced && r.forced.length > 0) || false;
     const cells = [r.label, r.morning, r.deployment, r.weekend, r.notAvailable];
     cells.forEach((v, i) => {
       const td = document.createElement("td");
@@ -829,8 +1047,16 @@ function renderPreview(rows, namesList) {
         (i === 2 && r.deploymentManual) ||
         (i === 3 && r.weekendManual);
       if (manual) td.classList.add("deploy-manual");
+      // A staff cell that carries a duty today gets flagged red when the day could
+      // not avoid a tiring (consecutive / double-shift / overload) pattern.
+      if (flagged && i >= 1 && i <= 3 && v) td.classList.add("flag-cell");
       tr.appendChild(td);
     });
+    if (flagged) {
+      // Flag the date cell too and give the row a readable "must bear" tooltip.
+      tr.children[0].classList.add("flag-date");
+      tr.children[0].title = r.forced.join("\n");
+    }
     tbody.appendChild(tr);
   }
   if (!rows.length) {
@@ -954,6 +1180,13 @@ function renderMatrix(rows, namesList, unavailable) {
         // Physically available, no duty assigned to this staff today.
         td.classList.add("matrix-avail");
       }
+      // Flag the on-duty staff cell red when this date had to bear a tiring
+      // (consecutive / double-shift / overload) pattern the fairness rule forced.
+      if (row && row.forced && row.forced.length > 0 &&
+          [row.morning, row.deployment, row.weekend].includes(name)) {
+        td.classList.add("matrix-flag");
+        td.title = row.forced.join(" | ");
+      }
       tr.appendChild(td);
     }
     tbody.appendChild(tr);
@@ -992,11 +1225,16 @@ function exportToXLS(rows, counts, namesList, unavailable) {
     const mStyle = r.morningManual ? "font-weight:bold;" : "";
     const depStyle = r.deploymentManual ? "font-weight:bold;" : "";
     const wStyle = r.weekendManual ? "font-weight:bold;" : "";
+    const flag = (r.forced && r.forced.length > 0) || false;
+    const flagStyle = "background:#F8D7DA;color:#842029;font-weight:bold;";
+    const flagMsg = flag ? ` title="${esc(r.forced.join("\n"))}"` : "";
+    // Flag the date cell red when this date carries an unavoidable tiring pattern.
+    const dateStyle = (flag ? flagStyle : "") + bg;
     mainRows += `<tr style="border:1px solid #000">
-      <td style="border:1px solid #000;padding:4px;font-weight:bold;${bg}">${esc(r.label)}</td>
-      <td style="border:1px solid #000;padding:4px;${mStyle}">${esc(r.morning)}</td>
-      <td style="border:1px solid #000;padding:4px;${depStyle}">${esc(r.deployment)}</td>
-      <td style="border:1px solid #000;padding:4px;${wStyle}">${esc(r.weekend)}</td>
+      <td style="border:1px solid #000;padding:4px;font-weight:bold;${dateStyle}"${flagMsg}>${esc(r.label)}</td>
+      <td style="border:1px solid #000;padding:4px;${flag && r.morning ? flagStyle : ""}${mStyle}">${esc(r.morning)}</td>
+      <td style="border:1px solid #000;padding:4px;${flag && r.deployment ? flagStyle : ""}${depStyle}">${esc(r.deployment)}</td>
+      <td style="border:1px solid #000;padding:4px;${flag && r.weekend ? flagStyle : ""}${wStyle}">${esc(r.weekend)}</td>
       <td style="border:1px solid #000;padding:4px;${naStyle}">${esc(r.notAvailable)}</td>
     </tr>`;
   }
