@@ -492,9 +492,34 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
     };
   }
 
+  // Track, per day, who worked ANY shift (soft "no consecutive days" goal) and
+  // who was assigned Deployment (Rule 1: weekend person must differ from the
+  // previous day's Deployment person).
+  const workedByDay = {};      // iso -> Set of names
+  const deploymentByDay = {};  // iso -> name
+  const weekendPersonByDay = {}; // iso -> name (weekend support only)
+
+  // Hard rest rule (original rules #4/#5): a person who did Deployment or
+  // Weekend Support yesterday cannot do Morning Health Check today. Rebuilt
+  // each day from that day's worked set — never accumulated across days.
   let cannotMorningToday = new Set();
-  let lastWeekendPerson = null;
+
   const rows = [];
+
+  const isCalendarSat = (iso) => isoWeekday(iso) === 5;
+  const isCalendarSun = (iso) => isoWeekday(iso) === 6;
+  // Same-weekend partner for the Sat != Sun rule: Sat<->Sun when both days are
+  // weekend-support days. Returns null for non-calendar-weekend days.
+  const weekendPartner = (iso) => {
+    if (isCalendarSat(iso) && needsWeekendShift(dayPlus(iso, 1), holidays)) return dayPlus(iso, 1);
+    if (isCalendarSun(iso) && needsWeekendShift(dayPlus(iso, -1), holidays)) return dayPlus(iso, -1);
+    return null;
+  };
+  // Rule-1 violation: person worked Weekend Support on X but was Deployment on X-1.
+  const violatedRule1 = (iso, person) => {
+    const prev = dayPlus(iso, -1);
+    return deploymentByDay[prev] === person;
+  };
 
   for (const day of days) {
     // A day is a WORK day (Morning + Deployment) only when it is neither a
@@ -516,134 +541,131 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
 
     const availableFor = (name) => !(unavailable[name] && unavailable[name][day]);
 
-    // ---- Workday shifts: Morning Health Check + Deployment -----------------
-    // On a workday (Mon–Fri, not a public holiday) two SEPARATE colleagues are
-    // on duty: Morning Health Check and Deployment. Each shift is balanced
-    // independently (equal-ish Deployment days, equal-ish Morning days), so the
-    // two are chosen TOGETHER each day as the pair that keeps BOTH counts most
-    // even (never the same person on both shifts). A manual Deployment lock is
-    // honored on ANY day type (even weekend/holiday); a manual Morning lock is
-    // honored on workdays.
     let morning = "";
     let morningManual = false;
     let deployment = "";
     let deploymentManual = false;
-    let overlap = false; // same colleague covers both Morning & Deployment today
 
     const manualDeployForDay = manualDeployment[day] && manualDeployment[day].name;
-    if (manualDeployForDay && availableFor(manualDeployForDay)) {
-      deployment = manualDeployForDay;
-      deploymentManual = true;
-      counts[deployment].deployment++; // totals reflect who actually worked
-    }
+    const deplLocked = manualDeployForDay && availableFor(manualDeployForDay);
+    const manualMorningForDay = manualMorning[day] && manualMorning[day].name;
+    const mornLocked = manualMorningForDay && availableFor(manualMorningForDay);
 
+    // ---- Workday shifts: Morning Health Check + Deployment -----------------
+    // On a workday (Mon–Fri, not a public holiday) Morning and Deployment are
+    // chosen TOGETHER as the (Deployment D, Morning M) pair that keeps BOTH
+    // counts most even, preserving the pure evenness metric. A manual
+    // Deployment/Morning lock (when the person is available) fixes that slot.
+    // D and M MAY be the same person (overlap is now a normal, un-flagged tool).
+    // Among equally-even pairs we prefer the one whose people did not work the
+    // previous calendar day (soft "no consecutive days" goal).
     if (weekdayShift) {
-      const manualMorningForDay = manualMorning[day] && manualMorning[day].name;
-      const hasManualMorning = manualMorningForDay && availableFor(manualMorningForDay);
+      const dCands = deplLocked ? [manualDeployForDay] : names.filter((n) => availableFor(n));
+      // Hard rest rule: a person who did Deployment or Weekend Support yesterday
+      // is blocked from today's Morning (Deployment carries no such tomorrow
+      // block, so the deployment candidate pool is unaffected). A manual Morning
+      // lock is still honored regardless.
+      const mCands = mornLocked
+        ? [manualMorningForDay]
+        : names.filter((n) => availableFor(n) && !cannotMorningToday.has(n));
 
-      // Morning manual lock (if any): honored on a workday.
-      if (hasManualMorning) {
-        morning = manualMorningForDay;
-        morningManual = true;
+      let bestD = "", bestM = "", bestScore = Infinity, bestConsec = Infinity;
+      const yesterdayWorked = workedByDay[dayPlus(day, -1)] || new Set();
+      for (const D of dCands) {
+        for (const M of mCands) {
+          const depNext = counts[D].deployment + 1;
+          const morNext = counts[M].morning + 1;
+          const score = Math.max(depNext, morNext) * 1000 + (depNext + morNext);
+          // Soft "no consecutive days" tie-break: fewer distinct people who worked yesterday.
+          const consec = (yesterdayWorked.has(D) ? 1 : 0) + (D !== M && yesterdayWorked.has(M) ? 1 : 0);
+          // Prefer two DISTINCT people (Morning != Deployment) so a weekday's work is
+          // shared — the same person doing both is still allowed, but only comes to
+          // break a consecutive-days tie or when availability forces it.
+          const distinct = D !== M;
+          const better =
+            score < bestScore ||
+            (score === bestScore && consec < bestConsec) ||
+            (score === bestScore && consec === bestConsec && distinct && bestD === bestM);
+          if (better) {
+            bestScore = score; bestD = D; bestM = M; bestConsec = consec;
+          }
+        }
+      }
+      if (bestM !== "") {
+        deployment = bestD;
+        deploymentManual = deplLocked && bestD === manualDeployForDay;
+        morning = bestM;
+        morningManual = mornLocked && bestM === manualMorningForDay;
+        counts[deployment].deployment++;
         counts[morning].morning++;
       }
-
-      if (deployment) {
-        // Deployment already locked (manual). Auto Morning where available,
-        // distinct from the deployment person and not rest-blocked.
-        if (!hasManualMorning) {
-          const pool = names.filter(
-            (n) => availableFor(n) && n !== deployment && !cannotMorningToday.has(n)
-          );
-          if (pool.length) {
-            morning = pool.reduce((best, n) =>
-              counts[n].morning < counts[best].morning ? n : best
-            );
-            counts[morning].morning++;
-          }
-        }
-      } else if (hasManualMorning) {
-        // Auto Deployment (manual Morning is fixed): balance Deployment days,
-        // never the manual-morning person.
-        const pool = names.filter((n) => availableFor(n) && n !== manualMorningForDay);
-        if (pool.length) {
-          deployment = pool.reduce((best, n) =>
-            counts[n].deployment < counts[best].deployment ? n : best
-          );
-          counts[deployment].deployment++;
-        }
-      } else {
-        // Fully auto: choose the (Deployment, Morning) pair that best balances
-        // BOTH counts, preferring two DISTINCT people. Minimise the larger
-        // predicted count first, then the total, so neither shift drifts.
-        const dPool = names.filter((n) => availableFor(n));
-        const mPool = names.filter((n) => availableFor(n) && !cannotMorningToday.has(n));
-        let bestD = "", bestM = "", bestScore = Infinity;
-        for (const d of dPool) {
-          for (const mm of mPool) {
-            if (d === mm) continue; // prefer distinct people
-            const depNext = counts[d].deployment + 1;
-            const morNext = counts[mm].morning + 1;
-            const score = Math.max(depNext, morNext) * 1000 + (depNext + morNext);
-            if (score < bestScore) { bestScore = score; bestD = d; bestM = mm; }
-          }
-        }
-        if (bestM === "") {
-          // No two distinct people can cover both shifts today (e.g. only one
-          // colleague is available). As a last resort let ONE person do BOTH
-          // Morning and Deployment, and flag it so the UI shows it in red.
-          // The person must be morning-eligible (not rest-blocked) and available.
-          const overlapPool = names.filter((n) => availableFor(n) && !cannotMorningToday.has(n));
-          let bestOv = "", bestOvScore = Infinity;
-          for (const n of overlapPool) {
-            const depNext = counts[n].deployment + 1;
-            const morNext = counts[n].morning + 1;
-            const score = Math.max(depNext, morNext) * 1000 + (depNext + morNext);
-            if (score < bestOvScore) { bestOvScore = score; bestOv = n; }
-          }
-          if (bestOv !== "") {
-            bestD = bestOv; bestM = bestOv;
-          }
-        }
-        if (bestM !== "") {
-          overlap = bestD === bestM;
-          deployment = bestD; counts[deployment].deployment++;
-          morning = bestM; counts[morning].morning++;
-        }
-      }
+    } else if (deplLocked) {
+      // Weekend / holiday: a manual Deployment lock is still honored (no auto
+      // Morning/Deployment those days unless locked).
+      deployment = manualDeployForDay;
+      deploymentManual = true;
+      counts[deployment].deployment++;
     }
 
     // ---- Weekend Support (Sat/Sun/public holidays) ---------------------------
     let weekend = "";
     let weekendManual = false;
     if (weekendShift) {
-      // Manual override: use the locked-in name if valid AND available.
       const manual = manualWeekend[day] && manualWeekend[day].name;
       if (manual && availableFor(manual)) {
         weekend = manual;
         weekendManual = true;
         counts[weekend].weekend++;
-        if (isWeekendISO(day)) lastWeekendPerson = weekend;
       } else {
-        // Exclude today's (manual) deployment person from the Weekend Support
-        // pool so a colleague who is deployed on a weekend isn't double-booked
-        // into both the Deployment and the Weekend Support shift.
-        const pool = names.filter((n) => availableFor(n) && n !== deployment);
+        // Eligible pool: available, not Rule-1-eligible (differs from yesterday's
+        // Deployment), differs from today's Deployment person (no double-booking
+        // into both shifts same day), and differs from the same-weekend partner
+        // (Sat != Sun).
+        const partner = weekendPartner(day);
+        let pool = names.filter(
+          (n) =>
+            availableFor(n) &&
+            n !== deployment &&
+            !violatedRule1(day, n) &&
+            n !== (partner && weekendPersonByDay[partner])
+        );
+        // If the Sat != Sun filter would leave nobody (rare hard-constraint clash),
+        // relax it so a Weekend Support person is still assigned.
+        if (!pool.length && partner) {
+          pool = names.filter(
+            (n) => availableFor(n) && n !== deployment && !violatedRule1(day, n)
+          );
+        }
         if (pool.length) {
+          // Rule 2 fairness first — pick the lowest weekend count; tie-break with
+          // the soft "no consecutive days" goal (avoid someone who worked yesterday).
+          const workedYesterday = workedByDay[dayPlus(day, -1)] || new Set();
           weekend = pool.reduce((best, n) => {
-            const sameB = best === lastWeekendPerson ? 1 : 0;
-            const sameN = n === lastWeekendPerson ? 1 : 0;
-            const kB = [sameB, counts[best].weekend].join(".");
-            const kN = [sameN, counts[n].weekend].join(".");
-            return kN < kB ? n : best;
+            const cb = counts[best].weekend;
+            const cn = counts[n].weekend;
+            const consecutiveBest = workedYesterday.has(best) ? 1 : 0;
+            const consecutiveN = workedYesterday.has(n) ? 1 : 0;
+            if (cn !== cb) return cn < cb ? n : best;
+            return consecutiveN < consecutiveBest ? n : best;
           });
           counts[weekend].weekend++;
-          if (isWeekendISO(day)) lastWeekendPerson = weekend;
         }
       }
     }
 
-    // Rest rule: today's deployment/weekend people are blocked from tomorrow's morning.
+    // Record who worked each shift today (for the consecutive-days soft goal and
+    // Rule 1 / export bookkeeping).
+    const workedToday = new Set();
+    if (morning) workedToday.add(morning);
+    if (deployment) workedToday.add(deployment);
+    if (weekend) workedToday.add(weekend);
+    if (workedToday.size) workedByDay[day] = workedToday;
+    if (deployment) deploymentByDay[day] = deployment;
+    if (weekend) weekendPersonByDay[day] = weekend;
+
+    // Rebuild the hard rest rule for tomorrow: today's Deployment and Weekend
+    // Support people are blocked from tomorrow's Morning Health Check. Rebuilt
+    // per day (never accumulated) — a real-bug guard retained from the prototype.
     cannotMorningToday = new Set([deployment, weekend].filter(Boolean));
 
     rows.push({
@@ -654,11 +676,133 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
       morningManual,
       deployment,
       deploymentManual,
-      overlap,
       weekend,
       weekendManual,
       notAvailable: notes.join(", "),
     });
+  }
+
+  // ---- Rule 2: rebalance Weekend Support toward the most-even distribution ----
+  // A bounded local-search pass that moves a weekend-support assignment from an
+  // over-assigned (or simply movable) colleague to another, closing the gap to
+  // each person's ideal target, while preserving availability, Sat != Sun,
+  // Rule 1 (difference from previous day's Deployment), and never moving a
+  // manual-locked weekend. Each move keeps total weekend slots constant. This is
+  // a pure per-shift evenness pass; the "no consecutive days" soft goal is only
+  // consulted to break exact ties and is never allowed to break evenness.
+  const weekendRows = [];
+  rows.forEach((r, idx) => {
+    if (r.isWeekend && r.weekend) weekendRows.push({ idx, day: r.date, person: r.weekend, manual: r.weekendManual });
+  });
+  const totalWeekend = weekendRows.length;
+  if (totalWeekend > 0) {
+    const base = Math.floor(totalWeekend / names.length);
+    const rem = totalWeekend % names.length;
+    const ideal = {};
+    names.forEach((n, i) => { ideal[n] = base + (i < rem ? 1 : 0); });
+
+    const devBefore = () => names.reduce((s, n) => s + Math.abs(counts[n].weekend - ideal[n]), 0);
+    const mayAssign = (w, cand) => {
+      if (cand === w.person) return false;
+      if (!(unavailable[cand] ? !(unavailable[cand][w.day]) : true)) return false;
+      if (violatedRule1(w.day, cand)) return false;
+      const partner = weekendPartner(w.day);
+      if (partner && weekendPersonByDay[partner] === cand) return false;
+      return true;
+    };
+    // Consecutive-day overlap count across weekend assignments (soft goal only).
+    const consecOverlaps = () => {
+      let c = 0;
+      for (const w of weekendRows) {
+        const prev = workedByDay[dayPlus(w.day, -1)];
+        const next = workedByDay[dayPlus(w.day, 1)];
+        if (prev && prev.has(w.person)) c++;
+        if (next && next.has(w.person)) c++;
+      }
+      return c;
+    };
+
+    let swaps = 0;
+    let moved = true;
+    while (moved && swaps < 200) {
+      moved = false;
+      let bestMove = null; // { w, cand, gain, consecAfter }
+      let bestGain = 0;
+      for (const w of weekendRows) {
+        if (w.manual) continue; // never move a manual-locked weekend
+        for (const cand of names) {
+          if (!mayAssign(w, cand)) continue;
+          const before = devBefore();
+          // simulate: w.person -> cand
+          counts[w.person].weekend--;
+          counts[cand].weekend++;
+          const after = devBefore();
+          counts[cand].weekend--;
+          counts[w.person].weekend++;
+          const gain = before - after;
+          if (gain <= 0) continue;
+          // Candidate move improves evenness. Prefer larger gain; tie-break on the
+          // soft consecutive-days goal (only meaningful when counts are equal).
+          if (gain > bestGain) {
+            bestGain = gain; bestMove = { w, cand };
+          }
+        }
+      }
+      if (bestMove) {
+        const { w, cand } = bestMove;
+        counts[w.person].weekend--;
+        counts[cand].weekend++;
+        rows[w.idx].weekend = cand;
+        weekendPersonByDay[w.day] = cand;
+        const worked = workedByDay[w.day] || new Set();
+        worked.delete(w.person);
+        worked.add(cand);
+        workedByDay[w.day] = worked;
+        w.person = cand;
+        swaps++;
+        moved = true;
+      }
+    }
+
+    // Once counts are already even (no improving evenness move), optionally reduce
+    // consecutive-day overlaps without disturbing evenness — bounded to avoid churn.
+    swaps = 0;
+    moved = true;
+    while (moved && swaps < 50) {
+      moved = false;
+      let bestMove = null;
+      let bestCons = consecOverlaps();
+      for (const w of weekendRows) {
+        if (w.manual) continue;
+        const before = devBefore();
+        if (before !== 0) continue; // only optimize consec when counts are already even
+        for (const cand of names) {
+          if (!mayAssign(w, cand)) continue;
+          counts[w.person].weekend--;
+          counts[cand].weekend++;
+          const after = devBefore();
+          if (after !== 0) { counts[cand].weekend--; counts[w.person].weekend++; continue; }
+          const cons = consecOverlaps();
+          counts[cand].weekend--;
+          counts[w.person].weekend++;
+          if (cons < bestCons) { bestCons = cons; bestMove = { w, cand }; }
+        }
+      }
+      if (bestMove) {
+        const { w, cand } = bestMove;
+        counts[w.person].weekend--;
+        counts[cand].weekend++;
+        rows[w.idx].weekend = cand;
+        weekendPersonByDay[w.day] = cand;
+        const worked = workedByDay[w.day] || new Set();
+        worked.delete(w.person);
+        worked.add(cand);
+        workedByDay[w.day] = worked;
+        w.person = cand;
+        swaps++;
+        moved = true;
+      }
+    }
   }
 
   return { rows, counts };
@@ -685,8 +829,6 @@ function renderPreview(rows, namesList) {
         (i === 2 && r.deploymentManual) ||
         (i === 3 && r.weekendManual);
       if (manual) td.classList.add("deploy-manual");
-      // Same colleague covering both Morning and Deployment today: red text.
-      if (r.overlap && (i === 1 || i === 2)) td.classList.add("overlap-cell");
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
@@ -780,12 +922,7 @@ function renderMatrix(rows, namesList, unavailable) {
         td.title = `${name} unavailable (${dayNotes.join(", ")})`;
       } else if (row && row.morning === name) {
         td.classList.add("matrix-morning");
-        if (row.overlap) {
-          // Same colleague covers Morning + Deployment today (last resort).
-          td.classList.add("matrix-overlap");
-          td.textContent = "M/D";
-          td.title = "Morning + Deployment (same person)";
-        } else if (row.morningManual) {
+        if (row.morningManual) {
           td.classList.add("matrix-morning-manual");
           td.textContent = "M*";
           td.title = "Morning duty (manual)";
@@ -852,9 +989,8 @@ function exportToXLS(rows, counts, namesList, unavailable) {
   for (const r of rows) {
     const bg = r.isWeekend ? "background:#FBE5D6" : "";
     const naStyle = r.notAvailable ? "background:#FCE4D6" : "";
-    const overlapStyle = "color:#c0392b;font-weight:bold;";
-    const mStyle = r.overlap ? overlapStyle : (r.morningManual ? "font-weight:bold;" : "");
-    const depStyle = r.overlap ? overlapStyle : (r.deploymentManual ? "font-weight:bold;" : "");
+    const mStyle = r.morningManual ? "font-weight:bold;" : "";
+    const depStyle = r.deploymentManual ? "font-weight:bold;" : "";
     const wStyle = r.weekendManual ? "font-weight:bold;" : "";
     mainRows += `<tr style="border:1px solid #000">
       <td style="border:1px solid #000;padding:4px;font-weight:bold;${bg}">${esc(r.label)}</td>
