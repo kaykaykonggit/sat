@@ -350,6 +350,18 @@ function deriveFromRecords(records, s, e) {
   const unavailable = {};
   const manualShifts = { morning: {}, deployment: {}, weekend: {} };
 
+  // Process records in a CANONICAL order so the derived inputs (unavailability,
+  // holidays, manual "first-wins" locks) are identical no matter the order the
+  // user typed the records. This is what makes the schedule order-independent.
+  const ordered = (records || [])
+    .slice()
+    .sort((a, b) =>
+      (a.type || "").localeCompare(b.type || "") ||
+      (a.name || "").localeCompare(b.name || "") ||
+      (a.start || "").localeCompare(b.start || "") ||
+      (a.end || "").localeCompare(b.end || "")
+    );
+
   const addUnavailable = (who, rec) => {
     let rs = rec.start, re = rec.end;
     if (rs > re) { [rs, re] = [re, rs]; } // swap inverted range
@@ -361,7 +373,7 @@ function deriveFromRecords(records, s, e) {
     }
   };
 
-  for (const rec of records) {
+  for (const rec of ordered) {
     if (rec.type === "holiday") {
       let rs = rec.start, re = rec.end;
       if (rs > re) { [rs, re] = [re, rs]; }
@@ -864,6 +876,14 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
   // Whatever patterns remain after this pass are the genuinely-unavoidable cost of
   // keeping the counts fair, and are flagged red below for the staff to bear.
   reduceFatigue(rows, names, unavailable, manualShifts);
+  // relocate moves in the fatigue pass change individual counts, so recompute the
+  // per-person shift totals from the final rows before reporting them.
+  for (const n of Object.keys(counts)) counts[n] = { morning: 0, deployment: 0, weekend: 0 };
+  for (const r of rows) {
+    if (r.morning) counts[r.morning].morning++;
+    if (r.deployment) counts[r.deployment].deployment++;
+    if (r.weekend) counts[r.weekend].weekend++;
+  }
   computeFlags(rows, names); // sets row.forced (possibly empty) on every row
 
   return { rows, counts };
@@ -984,44 +1004,114 @@ function reduceFatigue(rows, names, unavailable, manualShifts) {
   manualShifts = manualShifts || {};
   const dayIsManual = (r, col) =>
     col === "deployment" ? r.deploymentManual : col === "morning" ? r.morningManual : r.weekendManual;
+  const cols = ["deployment", "morning", "weekend"];
+  const asWeekday = (r) => !r.isWeekend;
 
-  // A JOINT local-search loop (not per-column fixed points). Each iteration scans
-  // candidate 2-way swaps in ALL three columns and applies the single globally
-  // best one. Cross-column interference is why this matters: an improvement in
-  // the Morning column can later unlock a Deployment-column improvement (and vice
-  // versa), which a sequential per-column pass would miss. Bounded iterations
-  // guarantee it always finishes quickly in the browser.
-  const COLS = ["deployment", "morning", "weekend"];
-  const budget = 300;
+  const countsOf = () => {
+    const c = {};
+    for (const n of names) c[n] = { morning: 0, deployment: 0, weekend: 0 };
+    for (const r of rows) {
+      if (r.morning) c[r.morning].morning++;
+      if (r.deployment) c[r.deployment].deployment++;
+      if (r.weekend) c[r.weekend].weekend++;
+    }
+    return c;
+  };
+  const spread = (arr) => Math.max(...arr) - Math.min(...arr);
+  const deplByDay = () => {
+    const d = {}; for (const r of rows) if (r.deployment) d[r.date] = r.deployment; return d;
+  };
+  const roleByDay = () => {
+    const m = {};
+    for (const r of rows) {
+      m[r.date] = {};
+      if (r.morning) m[r.date][r.morning] = (m[r.date][r.morning] || 0) + 1;
+      if (r.deployment) m[r.date][r.deployment] = (m[r.date][r.deployment] || 0) + 1;
+      if (r.weekend) m[r.date][r.weekend] = (m[r.date][r.weekend] || 0) + 1;
+    }
+    return m;
+  };
+
+  // Objective. The CSV spread of every shift is held to at most MAX_SPREAD
+  // (hard cap → huge penalty); within that, we minimize a weighted combo of the
+  // same-day M+D "red" days and consecutive- Deployment (the user's most-tiring
+  // concern). This lets the pass trade a little spread to remove red flags, but
+  // never lets any shift drift past "接近平均".
+  const MAX_SPREAD = 2;
+  const RED_W = 8, CONSEC_W = 12, SPREAD_W = 1;
+  const cost = () => {
+    const c = countsOf();
+    const mS = spread(names.map((n) => c[n].morning));
+    const dS = spread(names.map((n) => c[n].deployment));
+    const wS = spread(names.map((n) => c[n].weekend));
+    let hard = 0;
+    if (mS > MAX_SPREAD) hard += 1e6;
+    if (dS > MAX_SPREAD) hard += 1e6;
+    if (wS > MAX_SPREAD) hard += 1e6;
+    let red = 0, cc = 0;
+    const dp = deplByDay();
+    for (const r of rows) {
+      if (r.morning && r.deployment && r.morning === r.deployment) red++;
+      if (r.deployment && dp[dayPlus(r.date, -1)] === r.deployment) cc++;
+    }
+    return hard + (mS + dS + wS) * SPREAD_W + red * RED_W + cc * CONSEC_W;
+  };
+
+  // A JOINT local-search loop. Each iteration scans TWO kinds of moves and
+  // applies the single globally-best improving one:
+  //   (1) same-column 2-way swap between two candidate days (count-preserving),
+  //   (2) single-day relocate of a Deployment/Morning to a different available
+  //       person on that same day (count-changing — this is what lets the pass
+  //       BREAK a same-day M+D red day by handing one side to another colleague).
+  // Every candidate is gated by validateAll (hard rules), so nothing can break
+  // availability / rest / Rule-1 / Sat≠Sun. Bounded iterations → always fast.
+  const budget = 800;
   for (let iter = 0; iter < budget; iter++) {
-    const before = computeFlags(rows, names);
-    let best = null; // { ia, ib, col, total }
-    for (const col of COLS) {
-      // Candidate days that can host this column: deployment/morning on weekday
-      // rows, weekend on weekend/holiday rows.
+    const before = cost();
+    let best = null; // { apply: fn, total }
+    // --- same-column 2-way swaps ---
+    for (const col of cols) {
       const hosts = rows
         .map((r, i) => ({ r, i }))
-        .filter(({ r }) => (col === "weekend" ? r.isWeekend : !r.isWeekend))
+        .filter(({ r }) => (col === "weekend" ? r.isWeekend : asWeekday(r)))
         .filter(({ r }) => Boolean(r[col]) && !dayIsManual(r, col));
       for (let a = 0; a < hosts.length; a++) {
         for (let b = a + 1; b < hosts.length; b++) {
           const ra = hosts[a].r, rb = hosts[b].r, ia = hosts[a].i, ib = hosts[b].i;
-          if (ra[col] === rb[col]) continue; // nothing to swap
+          if (ra[col] === rb[col]) continue;
           const va = ra[col], vb = rb[col];
           ra[col] = vb; rb[col] = va;
           const ok = validateAll(rows, names, unavailable);
-          const t = ok ? computeFlags(rows, names) : Infinity;
-          ra[col] = va; rb[col] = vb; // revert probe
+          const t = ok ? cost() : Infinity;
+          ra[col] = va; rb[col] = vb;
           if (t < before && t < (best ? best.total : Infinity)) {
-            best = { ia, ib, col, total: t };
+            best = { total: t, apply: () => { rows[ia][col] = vb; rows[ib][col] = va; } };
           }
         }
       }
     }
-    if (!best) break; // fixed point: no strict improvement in any column
-    const ra = rows[best.ia], rb = rows[best.ib];
-    const va = ra[best.col], vb = rb[best.col];
-    ra[best.col] = vb; rb[best.col] = va; // apply
+    // --- single-day relocate (count-changing) on weekdays ---
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (r.isWeekend) continue;
+      for (const col of ["deployment", "morning"]) {
+        if (!r[col] || dayIsManual(r, col)) continue;
+        const cur = r[col];
+        for (const nx of names) {
+          if (nx === cur) continue;
+          if (unavailable[nx] && unavailable[nx][r.date]) continue; // must be available
+          r[col] = nx;
+          const ok = validateAll(rows, names, unavailable);
+          const t = ok ? cost() : Infinity;
+          r[col] = cur;
+          if (t < before && t < (best ? best.total : Infinity)) {
+            best = { total: t, apply: () => { rows[i][col] = nx; } };
+          }
+        }
+      }
+    }
+    if (!best) break; // fixed point: no strict improvement in any move
+    best.apply();
   }
 }
 
