@@ -505,14 +505,15 @@ function newCounts(names) {
 }
 
 // Increment one leaf scope; refresh the derived weekend/total.
+// `total` = morning + deployment + thursday + wsat + wsun + h (the user's
+// formula: a Thursday deployment counts in BOTH `deployment` and `thursday`).
 function addCount(counts, name, key, delta) {
   counts[name][key] = (counts[name][key] || 0) + delta;
-  if (key === "wsat" || key === "wsun" || key === "hcount") {
-    counts[name].weekend = (counts[name].wsat || 0) + (counts[name].wsun || 0) + (counts[name].hcount || 0);
-  }
-  if (key === "morning" || key === "deployment" || key === "wsat" || key === "wsun" || key === "hcount") {
-    counts[name].total = (counts[name].morning || 0) + (counts[name].deployment || 0) + counts[name].weekend;
-  }
+  const c = counts[name];
+  c.weekend = (c.wsat || 0) + (c.wsun || 0) + (c.hcount || 0);
+  c.total =
+    (c.morning || 0) + (c.deployment || 0) + (c.thursday || 0) +
+    (c.wsat || 0) + (c.wsun || 0) + (c.hcount || 0);
   return counts;
 }
 
@@ -521,7 +522,9 @@ function syncDerivedCounts(counts, names) {
   for (const n of names) {
     const c = counts[n];
     c.weekend = (c.wsat || 0) + (c.wsun || 0) + (c.hcount || 0);
-    c.total = (c.morning || 0) + (c.deployment || 0) + c.weekend;
+    c.total =
+      (c.morning || 0) + (c.deployment || 0) + (c.thursday || 0) +
+      (c.wsat || 0) + (c.wsun || 0) + (c.hcount || 0);
   }
   return counts;
 }
@@ -541,8 +544,14 @@ function countSpread(counts, names, key) {
    directly (and marked deploymentManual) but still blocks next-day morning.
   --------------------------------------------------------------------------- */
 
-function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
+function buildSchedule(start, end, names, holidays, unavailable, manualShifts, opts) {
   if (!names.length) return { rows: [], counts: {} };
+  // opts (optional 7th param): { mPlusDAccepted?: Set<string> } — colleagues who
+  // are willing to pull Morning + Deployment on the same day (a relief valve);
+  // for them the same-day m+d penalty is dropped so the heavy-day pattern lands
+  // on their shoulders instead of spreading fatigue across everyone else.
+  opts = opts || {};
+  const mPlusDAccepted = opts.mPlusDAccepted || new Set();
   // manualShifts (optional 6th param): { morning?, deployment?, weekend? }
   // each keyed by iso -> { name, manual:true }. First wins per date.
   manualShifts = manualShifts || {};
@@ -717,7 +726,10 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts) {
           const tandem = tandemD >= 3 || tandemM >= 3 ? 1 : 0;
 
           const consec = (yesterdayWorked.has(D) ? 1 : 0) + (D !== M && yesterdayWorked.has(M) ? 1 : 0);
-          const same = D === M ? 1 : 0;
+          // Same-day Morning+Deployment: last resort, but a colleague who
+          // explicitly accepts it (mPlusDAccepted) gets no penalty so the engine
+          // can route the heavy day to them instead of spreading it.
+          const same = (D === M && !mPlusDAccepted.has(D)) ? 1 : 0;
           const total =
             evenness +
             DEPCONS_W * depConsec +
@@ -1274,7 +1286,6 @@ function rule10Pass(rows, names, unavailable, holidays, counts) {
     fieldOf(sc) === "morning" ? r.morningManual
       : fieldOf(sc) === "deployment" ? r.deploymentManual
       : r.weekendManual;
-  const scopeSpread = (sc) => countSpread(counts, names, sc);
   const totalSpread = () => countSpread(counts, names, "total");
 
   // Weekend-shift adjacency (ordered) so successiveness is an O(1) local check.
@@ -1290,11 +1301,12 @@ function rule10Pass(rows, names, unavailable, holidays, counts) {
     let best = null, bestGain = 0;
     scan:
     for (const sc of scopes) {
-      if (scopeSpread(sc) < 1) continue; // an even scope has no surplus to donate
+      // Total-imbalance targeting: a scope can donate as long as moving a unit
+      // from a high-total colleague to a low-total one strictly shrinks the
+      // `total` spread without pushing the MOVED leaf spread past MAX_SPREAD.
+      // (The per-scope strict evenness was already enforced by the greedy; this
+      // pass only equalizes cross-axis totals within that per-scope cap.)
       const f = fieldOf(sc);
-      let slots = 0;
-      for (const n of names) slots += counts[n][sc] || 0;
-      const fairCap = Math.ceil(slots / names.length);
       for (let i = 0; i < rows.length; i++) {
         const r = rows[i];
         const from = r[f];
@@ -1302,10 +1314,13 @@ function rule10Pass(rows, names, unavailable, holidays, counts) {
         // Day/scope eligibility for this candidate donor row.
         if (sc === "thursday") { if (isoWeekday(r.date) !== 3) continue; }
         else if (sc !== "morning") { if (!r.isWeekend || weekendScope(r.date, holidays) !== sc) continue; }
-        if ((counts[from][sc] || 0) <= fairCap) continue; // not a genuine surplus
         for (const to of names) {
           if (to === from) continue;
           if (counts[to].total >= counts[from].total) continue; // must reduce total spread
+          // Require the donor to have STRICTLY more of this scope than the
+          // acceptor, so the transfer NARROWS (never widens) this scope's spread.
+          // Per-scope fairness dominates total-targeting (user's strict rules).
+          if ((counts[to][sc] || 0) >= (counts[from][sc] || 0)) continue;
           // --- cheap localized feasibility (avoids the O(n) validateAll) ---
           if (unavailable[to] && unavailable[to][r.date]) continue;
           if (sc === "morning") {
@@ -1324,10 +1339,13 @@ function rule10Pass(rows, names, unavailable, holidays, counts) {
             if (r.weekend === to) continue;
           }
           // --- total-spread improvement quick check ---
-          const totals = names.map((n) => counts[n].total + (n === from ? -1 : n === to ? 1 : 0));
+          // A transfer moves one shift; a thursday transfer moves `deployment`
+          // AND `thursday` (so it changes `total` by ±2), everything else ±1.
+          const delta = sc === "thursday" ? 2 : 1;
+          const totals = names.map((n) => counts[n].total + (n === from ? -delta : n === to ? delta : 0));
           const afterSpread = Math.max(...totals) - Math.min(...totals);
           const gain = beforeTotal - afterSpread;
-          if (gain <= bestGain) continue;
+          if (gain <= 0) continue;
           // --- validateAll as a final safety gate on this genuine candidate ---
           considered++;
           const saved = r[f];
@@ -1340,7 +1358,7 @@ function rule10Pass(rows, names, unavailable, holidays, counts) {
           const newScopeSpread = sc === "thursday"
             ? countSpread(counts, names, "deployment")
             : countSpread(counts, names, leaf);
-          if (valid && newScopeSpread <= MAX_SPREAD) {
+          if (valid && newScopeSpread <= MAX_SPREAD && gain > bestGain) {
             best = { r, f, from, to, sc, leaf };
             bestGain = gain;
           }
@@ -1729,7 +1747,9 @@ function updateAll() {
     }
   }
 
-  const { rows, counts } = buildSchedule(s, e, names, holidays, unavailable, manualShifts);
+  const mPlusDEl = document.getElementById("mplusd");
+  const mPlusDAccepted = mPlusDEl ? new Set(parseNames(mPlusDEl.value)) : new Set();
+  const { rows, counts } = buildSchedule(s, e, names, holidays, unavailable, manualShifts, { mPlusDAccepted });
 
   // Swap the swapped start/end back into the download filename.
   renderPreview(rows);
@@ -1901,7 +1921,7 @@ function init() {
   // Live updates when the date range or colleague names change. (Records are
   // added/removed through the Add Record form and its list; those already call
   // updateAll(), so they are not re-wired here.)
-  ["startDate", "endDate", "names"].forEach((id) => {
+  ["startDate", "endDate", "names", "mplusd"].forEach((id) => {
     document.getElementById(id).addEventListener("input", updateAll);
   });
 

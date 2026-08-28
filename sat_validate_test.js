@@ -167,5 +167,42 @@ console.log("== Rule 10: cross-axis total spread stays within per-scope caps =="
   check(sp = Math.max(...names.map((n) => c[n].total)) - Math.min(...names.map((n) => c[n].total)) >= 0, "total spread found or zero");
 }
 
+console.log("== total = m + d + t + wsat + wsun + h (user formula) ==");
+{
+  const names = ["Andy", "Jessica", "Tina", "Alan"];
+  const hols = E.parseHolidays("2026-09-07,2026-10-01", "2026-08-01", "2026-10-31");
+  const res = E.buildSchedule("2026-08-01", "2026-10-31", names, hols, {}, { morning: {}, deployment: {}, weekend: {} }, { mPlusDAccepted: new Set(names) });
+  let ok = true;
+  for (const n of names) {
+    const c = res.counts[n];
+    const expect = c.morning + c.deployment + c.thursday + c.wsat + c.wsun + c.hcount;
+    if (c.total !== expect) ok = false;
+  }
+  check(ok, "total always equals m+d+t+wsat+wsun+h per colleague");
+}
+
+console.log("== Rule-10 relief + m+d acceptance improves total spread on hard unavailability ==");
+{
+  const names = ["Andy", "Jessica", "Tina", "Alan"];
+  const unavailable = { Andy: {}, Jessica: {}, Tina: {}, Alan: {} };
+  const mark = (p, iso) => { unavailable[p][iso] = ["Unavailable"]; };
+  E.expandRange("2026-09-05", "2026-09-20").forEach((d) => mark("Andy", d));
+  ["2026-09-02", "2026-09-12", "2026-09-16", "2026-09-18", "2026-09-19"].forEach((d) => mark("Jessica", d));
+  E.expandRange("2026-09-21", "2026-09-27").forEach((d) => mark("Jessica", d));
+  ["2026-09-02", "2026-09-11", "2026-09-18", "2026-09-19"].forEach((d) => mark("Tina", d));
+  E.expandRange("2026-09-25", "2026-09-27").forEach((d) => mark("Tina", d));
+  const hols = new Set();
+  const empty = { morning: {}, deployment: {}, weekend: {} };
+  const base = E.buildSchedule("2026-09-01", "2026-09-30", names, hols, unavailable, empty);
+  const relieved = E.buildSchedule("2026-09-01", "2026-09-30", names, hols, unavailable, empty, { mPlusDAccepted: new Set(["Andy"]) });
+  const tot = (r) => Math.max(...names.map((n) => r.counts[n].total)) - Math.min(...names.map((n) => r.counts[n].total));
+  const baseTot = tot(base), relTot = tot(relieved);
+  check(relTot <= baseTot && relTot <= 2, `total spread improves with m+d relief (base ${baseTot} -> relieved ${relTot})`);
+  // Designated acceptor can legally pull an m+d day.
+  let andyMD = 0;
+  for (const r of relieved.rows) if (r.morning === "Andy" && r.deployment === "Andy") andyMD++;
+  check(andyMD >= 1 || relTot < baseTot, "m+d relief is available to the accepting colleague");
+}
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

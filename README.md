@@ -27,6 +27,9 @@ Deploys as a static site to **Cloudflare Pages** (free) — no server, no backen
   - **Successiveness**: weekend/holiday support is never given to the same
     person on two consecutive weekend-shift days (includes Sat != Sun, plus
     e.g. Sunday + the following public-holiday Monday).
+  - **Same-day Morning+Deployment relief**: colleagues listed in the
+    "Same-day Morning + Deployment" box (default `Andy`) are allowed to pull
+    both shifts on one day, acting as a relief valve when coverage is tight.
   - **A saved manual Deployment is honored on any day** — even a weekend or
     holiday — so a colleague can be locked onto Deployment that day.
   - Rest rules: no Morning Health Check the day after a Deployment or a

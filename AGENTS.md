@@ -59,8 +59,10 @@ in Node for headless validation.
 - `counts[n]` per colleague carries SIX independent fairness scopes plus two
   derived totals:
   `{ morning, deployment, thursday, wsat, wsun, hcount, weekend, total }`.
-  `weekend = wsat + wsun + hcount` and `total = morning + deployment + weekend`
-  are always kept consistent with the leaves (see `addCount`/`syncDerivedCounts`).
+  `weekend = wsat + wsun + hcount` and
+  `total = morning + deployment + thursday + wsat + wsun + hcount` (a Thursday
+  deployment counts in BOTH `deployment` and `thursday`) are always kept
+  consistent with the leaves (see `addCount`/`syncDerivedCounts`).
   - `morning` = morning health check.
   - `deployment` = any deployment day (incl. Thursdays).
   - `thursday` = deployments falling on Thursday only (its own fair scope `t`).
