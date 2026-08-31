@@ -1,0 +1,499 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - heading "⚙️ Settings" [level=2] [ref=e4]
+    - group "Time Period" [ref=e5]:
+      - generic [ref=e7]: Start date
+      - textbox "Start date" [ref=e8]: 2026-08-31
+      - generic [ref=e9]: End date
+      - textbox "End date" [ref=e10]: 2026-09-30
+    - group "Colleague Names" [ref=e11]:
+      - textbox [ref=e13]: Andy, Jessica, Tina, Alan
+      - paragraph [ref=e14]: Comma- or newline-separated.
+    - group "Same-day Morning + Deployment" [ref=e15]:
+      - generic [ref=e17]: Accepting colleagues (helps as a relief valve)
+      - textbox "Accepting colleagues (helps as a relief valve)" [ref=e18]:
+        - /placeholder: e.g. Andy, Tina
+        - text: Andy
+      - paragraph [ref=e19]: These colleagues are OK pulling Morning AND Deployment on the same day — the engine lets them absorb the heavy day instead of spreading it.
+    - group "Add Record" [ref=e20]:
+      - generic [ref=e22]: Type
+      - combobox "Type" [ref=e23]:
+        - option "Holiday" [selected]
+        - option "Unavailable"
+        - option "Deployment"
+        - option "Morning Health Check"
+        - option "Weekend Support"
+      - generic [ref=e24]: Dates
+      - textbox "Dates" [ref=e25]:
+        - /placeholder: "sep1,5,20-23  —  or  Andy: sep1,5"
+      - button "＋ Add Record" [ref=e26] [cursor=pointer]
+      - paragraph [ref=e27]:
+        - text: One entry at a time. Format
+        - code [ref=e28]: sep1,5,20-23
+        - text: (month abbr) or
+        - code [ref=e29]: "Name: sep1,5"
+        - text: .
+        - strong [ref=e30]: Holiday
+        - text: with no name marks those dates as holidays; with a name it also marks that colleague off work that day.
+        - strong [ref=e31]: Unavailable
+        - text: marks a colleague off work (whole day) on those dates — e.g.
+        - code [ref=e32]: "Andy: sep1,5"
+        - text: — and shows in the Unavailable column. Manual shifts
+        - emphasis [ref=e33]: require
+        - text: a name and lock that person in for those dates. Morning runs weekdays,
+        - strong [ref=e34]: Deployment
+        - text: runs weekdays only, and
+        - strong [ref=e35]: Weekend Support
+        - text: covers Sat/Sun/public holidays — each is kept balanced across everyone. Manual locks are honored even on non-typical days. Use ranges
+        - code [ref=e36]: 7-20
+        - text: or lists
+        - code [ref=e37]: 2,5,11
+        - text: .
+      - paragraph [ref=e38]: "HK public holidays: using built-in list"
+      - paragraph [ref=e39]
+    - group "Saved Records" [ref=e40]:
+      - paragraph [ref=e43]: No records yet.
+      - paragraph [ref=e44]: Holidays, unavailability, and manual shifts you add all appear here. Use 🗑 to remove a record and re-solve the schedule.
+  - main [ref=e45]:
+    - generic [ref=e46]:
+      - heading "📅 SAT — Shift Arrangement Tool" [level=1] [ref=e47]
+      - paragraph [ref=e48]: Generate an even, constraint-respecting duty schedule and export it to Excel.
+    - generic [ref=e49]:
+      - heading "Availability Matrix" [level=3] [ref=e50]
+      - generic [ref=e51]:
+        - generic [ref=e52]: Unavailable
+        - generic [ref=e54]: Morning
+        - generic [ref=e56]: Morning (manual)
+        - generic [ref=e58]: Deployment
+        - generic [ref=e60]: Deployment (manual)
+        - generic [ref=e62]: Weekend Support
+        - generic [ref=e64]: Weekend Support (manual)
+        - generic [ref=e66]: Available
+        - generic [ref=e68]: Must bear (fairness forced a tiring day)
+      - table [ref=e71]:
+        - rowgroup [ref=e72]:
+          - row [ref=e73]:
+            - columnheader "Colleague \\ Date" [ref=e74]
+            - columnheader "08-31 一" [ref=e75]
+            - columnheader "09-01 二" [ref=e76]
+            - columnheader "09-02 三" [ref=e77]
+            - columnheader "09-03 四" [ref=e78]
+            - columnheader "09-04 五" [ref=e79]
+            - columnheader "09-05 六" [ref=e80]
+            - columnheader "09-06 日" [ref=e81]
+            - columnheader "09-07 一" [ref=e82]
+            - columnheader "09-08 二" [ref=e83]
+            - columnheader "09-09 三" [ref=e84]
+            - columnheader "09-10 四" [ref=e85]
+            - columnheader "09-11 五" [ref=e86]
+            - columnheader "09-12 六" [ref=e87]
+            - columnheader "09-13 日" [ref=e88]
+            - columnheader "09-14 一" [ref=e89]
+            - columnheader "09-15 二" [ref=e90]
+            - columnheader "09-16 三" [ref=e91]
+            - columnheader "09-17 四" [ref=e92]
+            - columnheader "09-18 五" [ref=e93]
+            - columnheader "09-19 六" [ref=e94]
+            - columnheader "09-20 日" [ref=e95]
+            - columnheader "09-21 一" [ref=e96]
+            - columnheader "09-22 二" [ref=e97]
+            - columnheader "09-23 三" [ref=e98]
+            - columnheader "09-24 四" [ref=e99]
+            - columnheader "09-25 五" [ref=e100]
+            - columnheader "09-26 六" [ref=e101]
+            - columnheader "09-27 日" [ref=e102]
+            - columnheader "09-28 一" [ref=e103]
+            - columnheader "09-29 二" [ref=e104]
+            - columnheader "09-30 三" [ref=e105]
+        - rowgroup [ref=e106]:
+          - row [ref=e107]:
+            - rowheader "Andy" [ref=e108]
+            - cell "D" [ref=e109]
+            - cell [ref=e110]
+            - cell "M" [ref=e111]
+            - cell "D" [ref=e112]
+            - cell [ref=e113]
+            - cell "W" [ref=e114]
+            - cell [ref=e115]
+            - cell "M" [ref=e116]
+            - cell "M" [ref=e117]
+            - cell [ref=e118]
+            - cell "M" [ref=e119]
+            - cell [ref=e120]
+            - cell [ref=e121]
+            - cell "W" [ref=e122]
+            - cell [ref=e123]
+            - cell "D" [ref=e124]
+            - cell [ref=e125]
+            - cell "M" [ref=e126]
+            - cell [ref=e127]
+            - cell [ref=e128]
+            - cell [ref=e129]
+            - cell "D" [ref=e130]
+            - cell [ref=e131]
+            - cell "D" [ref=e132]
+            - cell [ref=e133]
+            - cell "M" [ref=e134]
+            - cell [ref=e135]
+            - cell [ref=e136]
+            - cell [ref=e137]
+            - cell "D" [ref=e138]
+            - cell [ref=e139]
+          - row [ref=e140]:
+            - columnheader "Jessica" [ref=e141]
+            - cell [ref=e142]
+            - cell "D" [ref=e143]
+            - cell [ref=e144]
+            - cell "M" [ref=e145]
+            - cell [ref=e146]
+            - cell [ref=e147]
+            - cell "W" [ref=e148]
+            - cell [ref=e149]
+            - cell [ref=e150]
+            - cell "D" [ref=e151]
+            - cell [ref=e152]
+            - cell "D" [ref=e153]
+            - cell [ref=e154]
+            - cell [ref=e155]
+            - cell "M" [ref=e156]
+            - cell [ref=e157]
+            - cell "D" [ref=e158]
+            - cell [ref=e159]
+            - cell "M" [ref=e160]
+            - cell [ref=e161]
+            - cell [ref=e162]
+            - cell "M" [ref=e163]
+            - cell "D" [ref=e164]
+            - cell [ref=e165]
+            - cell "D" [ref=e166]
+            - cell [ref=e167]
+            - cell "W" [ref=e168]
+            - cell [ref=e169]
+            - cell "M" [ref=e170]
+            - cell [ref=e171]
+            - cell "M" [ref=e172]
+          - row [ref=e173]:
+            - columnheader "Tina" [ref=e174]
+            - cell [ref=e175]
+            - cell "M" [ref=e176]
+            - cell [ref=e177]
+            - cell [ref=e178]
+            - cell "D" [ref=e179]
+            - cell [ref=e180]
+            - cell [ref=e181]
+            - cell "D" [ref=e182]
+            - cell [ref=e183]
+            - cell "M" [ref=e184]
+            - cell [ref=e185]
+            - cell "M" [ref=e186]
+            - cell [ref=e187]
+            - cell [ref=e188]
+            - cell "D" [ref=e189]
+            - cell [ref=e190]
+            - cell "M" [ref=e191]
+            - cell "D" [ref=e192]
+            - cell [ref=e193]
+            - cell "W" [ref=e194]
+            - cell [ref=e195]
+            - cell [ref=e196]
+            - cell [ref=e197]
+            - cell "M" [ref=e198]
+            - cell [ref=e199]
+            - cell "D" [ref=e200]
+            - cell [ref=e201]
+            - cell "W" [ref=e202]
+            - cell [ref=e203]
+            - cell "M" [ref=e204]
+            - cell [ref=e205]
+          - row [ref=e206]:
+            - rowheader "Alan" [ref=e207]
+            - cell "M" [ref=e208]
+            - cell [ref=e209]
+            - cell "D" [ref=e210]
+            - cell [ref=e211]
+            - cell "M" [ref=e212]
+            - cell [ref=e213]
+            - cell [ref=e214]
+            - cell [ref=e215]
+            - cell "D" [ref=e216]
+            - cell [ref=e217]
+            - cell "D" [ref=e218]
+            - cell [ref=e219]
+            - cell "W" [ref=e220]
+            - cell [ref=e221]
+            - cell [ref=e222]
+            - cell "M" [ref=e223]
+            - cell [ref=e224]
+            - cell [ref=e225]
+            - cell "D" [ref=e226]
+            - cell [ref=e227]
+            - cell "W" [ref=e228]
+            - cell [ref=e229]
+            - cell "M" [ref=e230]
+            - cell [ref=e231]
+            - cell "M" [ref=e232]
+            - cell [ref=e233]
+            - cell [ref=e234]
+            - cell [ref=e235]
+            - cell "D" [ref=e236]
+            - cell [ref=e237]
+            - cell "D" [ref=e238]
+    - generic [ref=e239]:
+      - heading "Preview" [level=3] [ref=e240]
+      - table [ref=e242]:
+        - rowgroup [ref=e243]:
+          - row [ref=e244]:
+            - columnheader "Date" [ref=e245]
+            - columnheader "Morning Health Check (08:45~)" [ref=e246]
+            - columnheader "Deployment" [ref=e247]
+            - columnheader "Weekend Support" [ref=e248]
+            - columnheader "Unavailable" [ref=e249]
+        - rowgroup [ref=e250]:
+          - row [ref=e251]:
+            - cell "星期一 2026 08 31" [ref=e252]
+            - cell "Alan" [ref=e253] [cursor=pointer]
+            - cell "Andy" [ref=e254] [cursor=pointer]
+            - cell "Click to edit" [ref=e255] [cursor=pointer]
+            - cell [ref=e256]
+          - row [ref=e257]:
+            - cell "星期二 2026 09 01" [ref=e258]
+            - cell "Tina" [ref=e259] [cursor=pointer]
+            - cell "Jessica" [ref=e260] [cursor=pointer]
+            - cell "Click to edit" [ref=e261] [cursor=pointer]
+            - cell [ref=e262]
+          - row [ref=e263]:
+            - cell "星期三 2026 09 02" [ref=e264]
+            - cell "Andy" [ref=e265] [cursor=pointer]
+            - cell "Alan" [ref=e266] [cursor=pointer]
+            - cell "Click to edit" [ref=e267] [cursor=pointer]
+            - cell [ref=e268]
+          - row [ref=e269]:
+            - cell "星期四 2026 09 03" [ref=e270]
+            - cell "Jessica" [ref=e271] [cursor=pointer]
+            - cell "Andy" [ref=e272] [cursor=pointer]
+            - cell "Click to edit" [ref=e273] [cursor=pointer]
+            - cell [ref=e274]
+          - row [ref=e275]:
+            - cell "星期五 2026 09 04" [ref=e276]
+            - cell "Alan" [ref=e277] [cursor=pointer]
+            - cell "Tina" [ref=e278] [cursor=pointer]
+            - cell "Click to edit" [ref=e279] [cursor=pointer]
+            - cell [ref=e280]
+          - row [ref=e281]:
+            - cell "星期六 2026 09 05" [ref=e282]
+            - cell "Click to edit" [ref=e283] [cursor=pointer]
+            - cell "Click to edit" [ref=e284] [cursor=pointer]
+            - cell "Andy" [ref=e285] [cursor=pointer]
+            - cell [ref=e286]
+          - row [ref=e287]:
+            - cell "星期日 2026 09 06" [ref=e288]
+            - cell "Click to edit" [ref=e289] [cursor=pointer]
+            - cell "Click to edit" [ref=e290] [cursor=pointer]
+            - cell "Jessica" [ref=e291] [cursor=pointer]
+            - cell [ref=e292]
+          - row [ref=e293]:
+            - cell "星期一 2026 09 07" [ref=e294]
+            - cell "Andy" [ref=e295] [cursor=pointer]
+            - cell "Tina" [ref=e296] [cursor=pointer]
+            - cell "Click to edit" [ref=e297] [cursor=pointer]
+            - cell [ref=e298]
+          - row [ref=e299]:
+            - cell "星期二 2026 09 08" [ref=e300]
+            - cell "Andy" [ref=e301] [cursor=pointer]
+            - cell "Alan" [ref=e302] [cursor=pointer]
+            - cell "Click to edit" [ref=e303] [cursor=pointer]
+            - cell [ref=e304]
+          - row [ref=e305]:
+            - cell "星期三 2026 09 09" [ref=e306]
+            - cell "Tina" [ref=e307] [cursor=pointer]
+            - cell "Jessica" [ref=e308] [cursor=pointer]
+            - cell "Click to edit" [ref=e309] [cursor=pointer]
+            - cell [ref=e310]
+          - row [ref=e311]:
+            - cell "星期四 2026 09 10" [ref=e312]
+            - cell "Andy" [ref=e313] [cursor=pointer]
+            - cell "Alan" [ref=e314] [cursor=pointer]
+            - cell "Click to edit" [ref=e315] [cursor=pointer]
+            - cell [ref=e316]
+          - row [ref=e317]:
+            - cell "星期五 2026 09 11" [ref=e318]
+            - cell "Tina" [ref=e319] [cursor=pointer]
+            - cell "Jessica" [ref=e320] [cursor=pointer]
+            - cell "Click to edit" [ref=e321] [cursor=pointer]
+            - cell [ref=e322]
+          - row [ref=e323]:
+            - cell "星期六 2026 09 12" [ref=e324]
+            - cell "Click to edit" [ref=e325] [cursor=pointer]
+            - cell "Click to edit" [ref=e326] [cursor=pointer]
+            - cell "Alan" [ref=e327] [cursor=pointer]
+            - cell [ref=e328]
+          - row [ref=e329]:
+            - cell "星期日 2026 09 13" [ref=e330]
+            - cell "Click to edit" [ref=e331] [cursor=pointer]
+            - cell "Click to edit" [ref=e332] [cursor=pointer]
+            - cell "Andy" [ref=e333] [cursor=pointer]
+            - cell [ref=e334]
+          - row [ref=e335]:
+            - cell "星期一 2026 09 14" [ref=e336]
+            - cell "Jessica" [ref=e337] [cursor=pointer]
+            - cell "Tina" [ref=e338] [cursor=pointer]
+            - cell "Click to edit" [ref=e339] [cursor=pointer]
+            - cell [ref=e340]
+          - row [ref=e341]:
+            - cell "星期二 2026 09 15" [ref=e342]
+            - cell "Alan" [ref=e343] [cursor=pointer]
+            - cell "Andy" [ref=e344] [cursor=pointer]
+            - cell "Click to edit" [ref=e345] [cursor=pointer]
+            - cell [ref=e346]
+          - row [ref=e347]:
+            - cell "星期三 2026 09 16" [ref=e348]
+            - cell "Tina" [ref=e349] [cursor=pointer]
+            - cell "Jessica" [ref=e350] [cursor=pointer]
+            - cell "Click to edit" [ref=e351] [cursor=pointer]
+            - cell [ref=e352]
+          - row [ref=e353]:
+            - cell "星期四 2026 09 17" [ref=e354]
+            - cell "Andy" [ref=e355] [cursor=pointer]
+            - cell "Tina" [ref=e356] [cursor=pointer]
+            - cell "Click to edit" [ref=e357] [cursor=pointer]
+            - cell [ref=e358]
+          - row [ref=e359]:
+            - cell "星期五 2026 09 18" [ref=e360]
+            - cell "Jessica" [ref=e361] [cursor=pointer]
+            - cell "Alan" [ref=e362] [cursor=pointer]
+            - cell "Click to edit" [ref=e363] [cursor=pointer]
+            - cell [ref=e364]
+          - row [ref=e365]:
+            - cell "星期六 2026 09 19" [ref=e366]
+            - cell "Click to edit" [ref=e367] [cursor=pointer]
+            - cell "Click to edit" [ref=e368] [cursor=pointer]
+            - cell "Tina" [ref=e369] [cursor=pointer]
+            - cell [ref=e370]
+          - row [ref=e371]:
+            - cell "星期日 2026 09 20" [ref=e372]
+            - cell "Click to edit" [ref=e373] [cursor=pointer]
+            - cell "Click to edit" [ref=e374] [cursor=pointer]
+            - cell "Alan" [ref=e375] [cursor=pointer]
+            - cell [ref=e376]
+          - row [ref=e377]:
+            - cell "星期一 2026 09 21" [ref=e378]
+            - cell "Jessica" [ref=e379] [cursor=pointer]
+            - cell "Andy" [ref=e380] [cursor=pointer]
+            - cell "Click to edit" [ref=e381] [cursor=pointer]
+            - cell [ref=e382]
+          - row [ref=e383]:
+            - cell "星期二 2026 09 22" [ref=e384]
+            - cell "Alan" [ref=e385] [cursor=pointer]
+            - cell "Jessica" [ref=e386] [cursor=pointer]
+            - cell "Click to edit" [ref=e387] [cursor=pointer]
+            - cell [ref=e388]
+          - row [ref=e389]:
+            - cell "星期三 2026 09 23" [ref=e390]
+            - cell "Tina" [ref=e391] [cursor=pointer]
+            - cell "Andy" [ref=e392] [cursor=pointer]
+            - cell "Click to edit" [ref=e393] [cursor=pointer]
+            - cell [ref=e394]
+          - row [ref=e395]:
+            - cell "星期四 2026 09 24" [ref=e396]
+            - cell "Alan" [ref=e397] [cursor=pointer]
+            - cell "Jessica" [ref=e398] [cursor=pointer]
+            - cell "Click to edit" [ref=e399] [cursor=pointer]
+            - cell [ref=e400]
+          - row [ref=e401]:
+            - cell "星期五 2026 09 25" [ref=e402]
+            - cell "Andy" [ref=e403] [cursor=pointer]
+            - cell "Tina" [ref=e404] [cursor=pointer]
+            - cell "Click to edit" [ref=e405] [cursor=pointer]
+            - cell [ref=e406]
+          - row [ref=e407]:
+            - cell "星期六 2026 09 26" [ref=e408]
+            - cell "Click to edit" [ref=e409] [cursor=pointer]
+            - cell "Click to edit" [ref=e410] [cursor=pointer]
+            - cell "Jessica" [ref=e411] [cursor=pointer]
+            - cell [ref=e412]
+          - row [ref=e413]:
+            - cell "星期日 2026 09 27" [ref=e414]
+            - cell "Click to edit" [ref=e415] [cursor=pointer]
+            - cell "Click to edit" [ref=e416] [cursor=pointer]
+            - cell "Tina" [ref=e417] [cursor=pointer]
+            - cell [ref=e418]
+          - row [ref=e419]:
+            - cell "星期一 2026 09 28" [ref=e420]
+            - cell "Jessica" [ref=e421] [cursor=pointer]
+            - cell "Alan" [ref=e422] [cursor=pointer]
+            - cell "Click to edit" [ref=e423] [cursor=pointer]
+            - cell [ref=e424]
+          - row [ref=e425]:
+            - cell "星期二 2026 09 29" [ref=e426]
+            - cell "Tina" [ref=e427] [cursor=pointer]
+            - cell "Andy" [ref=e428] [cursor=pointer]
+            - cell "Click to edit" [ref=e429] [cursor=pointer]
+            - cell [ref=e430]
+          - row [ref=e431]:
+            - cell "星期三 2026 09 30" [ref=e432]
+            - cell "Jessica" [ref=e433] [cursor=pointer]
+            - cell "Alan" [ref=e434] [cursor=pointer]
+            - cell "Click to edit" [ref=e435] [cursor=pointer]
+            - cell [ref=e436]
+    - generic [ref=e437]:
+      - heading "Shift Counts" [level=3] [ref=e438]
+      - table [ref=e440]:
+        - rowgroup [ref=e441]:
+          - row [ref=e442]:
+            - columnheader "Colleague" [ref=e443]
+            - columnheader "Morning (m)" [ref=e444]
+            - columnheader "Deploy (d)" [ref=e445]
+            - columnheader "Thu (t)" [ref=e446]
+            - columnheader "WSat" [ref=e447]
+            - columnheader "WSun" [ref=e448]
+            - columnheader "Holiday (h)" [ref=e449]
+            - columnheader "Total" [ref=e450]
+        - rowgroup [ref=e451]:
+          - row [ref=e452]:
+            - cell "Andy" [ref=e453]
+            - cell "6" [ref=e454]
+            - cell "6" [ref=e455]
+            - cell "1" [ref=e456]
+            - cell "1" [ref=e457]
+            - cell "1" [ref=e458]
+            - cell "0" [ref=e459]
+            - cell "15" [ref=e460]
+          - row [ref=e461]:
+            - cell "Jessica" [ref=e462]
+            - cell "6" [ref=e463]
+            - cell "6" [ref=e464]
+            - cell "1" [ref=e465]
+            - cell "1" [ref=e466]
+            - cell "1" [ref=e467]
+            - cell "0" [ref=e468]
+            - cell "15" [ref=e469]
+          - row [ref=e470]:
+            - cell "Tina" [ref=e471]
+            - cell "6" [ref=e472]
+            - cell "5" [ref=e473]
+            - cell "1" [ref=e474]
+            - cell "1" [ref=e475]
+            - cell "1" [ref=e476]
+            - cell "0" [ref=e477]
+            - cell "14" [ref=e478]
+          - row [ref=e479]:
+            - cell "Alan" [ref=e480]
+            - cell "5" [ref=e481]
+            - cell "6" [ref=e482]
+            - cell "1" [ref=e483]
+            - cell "1" [ref=e484]
+            - cell "1" [ref=e485]
+            - cell "0" [ref=e486]
+            - cell "14" [ref=e487]
+    - generic [ref=e488]:
+      - heading "Export" [level=3] [ref=e489]
+      - generic [ref=e490]:
+        - button "👁 Preview Excel" [ref=e491] [cursor=pointer]
+        - button "⬇️ Download Excel Schedule" [ref=e492] [cursor=pointer]
+      - paragraph [ref=e493]:
+        - strong [ref=e494]: Preview
+        - text: renders the exact styled HTML that will be saved;
+        - strong [ref=e495]: Download
+        - text: saves the
+        - code [ref=e496]: .xls
+        - text: file. No third-party libraries — generated entirely in your browser.

@@ -618,6 +618,44 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
   const wsIndex = {};
   weekendShiftDays.forEach((d, i) => { wsIndex[d] = i; });
 
+  // ---- "Sudoku-first" pre-scan pass ---------------------------------------
+  // Before any greedy/fairness logic runs, scan EVERY weekend-shift day and
+  // prelock the single-available colleague into that day's Weekend Support.
+  // When exactly one staff member is available on a weekend-shift day, that
+  // person is the UNIQUE solution for the cell — so we lock them in up-front,
+  // before the per-day greedy and the post-passes (rebalance/reduceFatigue/
+  // rule10) could reassign them elsewhere. This is scoped to WEEKEND cells
+  // only: workday Morning/Deployment coverage stays owned by the in-day greedy,
+  // because the rest rule ("no Morning the day after Deployment/Weekend") is
+  // cross-day and can only be resolved in date order (a pre-scan cannot know
+  // yesterday's assignment without running the greedy). Availability is the
+  // ONLY hard constraint, so a single-available day must never be left blank.
+  //
+  // Consecutive single-available weekend days (e.g. Sat+Sun both have only one
+  // free person) are BOTH prelocked and flagged forced — same as the greedy's
+  // own Level-1 relaxation would do, and under-filling the second would be a
+  // coverage violation. A saved manual Weekend lock always wins over the
+  // pre-scan (first-wins precedence, manual is honored only if that person is
+  // available). Bookkeeping (counts / workedByDay / weekendPersonByDay) is done
+  // once, by the day-loop's consume path below — the pre-scan itself only
+  // builds the map, so nothing can drift out of sync.
+  // ---------------------------------------------------------------------------
+  const sudokuWeekend = {};   // iso -> name (single-available person, prelocked)
+  if (!manualShifts.weekend) manualShifts.weekend = {};
+  for (const day of weekendShiftDays) {
+    // A manual Weekend lock that will actually be honored (its holder is
+    // available) wins over the pre-scan. But if the manual-locked person is
+    // UNAVAILABLE, their lock is dropped by the day-loop (line ~813), so the
+    // coverage-first pre-scan must still run — otherwise the sole-available
+    // colleague is not prelocked and post-passes could reassign them.
+    const lockedName = manualShifts.weekend[day] && manualShifts.weekend[day].name;
+    if (lockedName && !(unavailable[lockedName] && unavailable[lockedName][day])) continue;
+    const avail = names.filter((n) => !(unavailable[n] && unavailable[n][day]));
+    if (avail.length === 1) {
+      sudokuWeekend[day] = avail[0];
+    }
+  }
+
   for (const day of days) {
     // A day is a WORK day (Morning + Deployment) only when it is neither a
     // calendar weekend nor a public holiday. Holidays — even when they fall on
@@ -644,11 +682,19 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
     let deployment = "";
     let deploymentManual = false;
     let weekendForced = false;
+    let weekendSudoku = false;
 
-    const manualDeployForDay = manualDeployment[day] && manualDeployment[day].name;
-    const deplLocked = manualDeployForDay && availableFor(manualDeployForDay);
-    const manualMorningForDay = manualMorning[day] && manualMorning[day].name;
-    const mornLocked = manualMorningForDay && availableFor(manualMorningForDay);
+    const manualDeployLock = manualDeployment[day];
+    const manualDeployForDay = manualDeployLock && manualDeployLock.name;
+    // A USER HARD-OVERRIDE ({override:true}) is honored EVEN if that person is
+    // unavailable that day — the user explicitly assigned them, so the schedule
+    // must recompute around it (warn, don't forbid). A normal manual lock is
+    // only honored if the holder is available (availability stays hard unless
+    // overridden).
+    const deplLocked = manualDeployForDay && (availableFor(manualDeployForDay) || manualDeployLock.override);
+    const manualMorningLock = manualMorning[day];
+    const manualMorningForDay = manualMorningLock && manualMorningLock.name;
+    const mornLocked = manualMorningForDay && (availableFor(manualMorningForDay) || manualMorningLock.override);
 
     // ---- Workday shifts: Morning Health Check + Deployment -----------------
     // On a workday (Mon–Fri, not a public holiday) Morning and Deployment are
@@ -775,10 +821,24 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
     let weekend = "";
     let weekendManual = false;
     if (weekendShift) {
-      const manual = manualWeekend[day] && manualWeekend[day].name;
-      if (manual && availableFor(manual)) {
+      const manualLock = manualWeekend[day];
+      const manual = manualLock && manualLock.name;
+      const prelocked = sudokuWeekend[day];
+      if (manual && (availableFor(manual) || manualLock.override)) {
+        // A manual (or user hard-override) weekend lock. Overrides honored even
+        // when unavailable, per "warn, don't forbid".
         weekend = manual;
         weekendManual = true;
+        if (!availableFor(manual)) weekendForced = true; // violates availability (warned below)
+        addCount(counts, weekend, weekendScope(day, holidays), 1);
+      } else if (prelocked && availableFor(prelocked)) {
+        // From the sudoku-first pre-scan: only this colleague is available, so it
+        // is the UNIQUE solution for the cell. Lock it in before the fair greedy
+        // runs, so post-passes cannot reassign them elsewhere. Also flagged forced
+        // so validateAll carves out any successiveness / Rule-1 breach it causes.
+        weekend = prelocked;
+        weekendForced = true;
+        weekendSudoku = true;
         addCount(counts, weekend, weekendScope(day, holidays), 1);
       } else {
         // Eligible pool: available, not Rule-1-eligible (differs from yesterday's
@@ -875,6 +935,7 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
       weekend,
       weekendManual,
       weekendForced,
+      weekendSudoku,
       notAvailable: notes.join(", "),
     });
   }
@@ -893,7 +954,8 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
   rows.forEach((r, idx) => {
     if (r.isWeekend && r.weekend) {
       weekendRows.push({
-        idx, day: r.date, person: r.weekend, manual: r.weekendManual,
+        idx, day: r.date, person: r.weekend,
+        manual: r.weekendManual || r.weekendSudoku, // sudoku-prelocked = immovable here too
         scope: weekendScope(r.date, holidays),
       });
     }
@@ -1187,6 +1249,10 @@ function reduceFatigue(rows, names, unavailable, manualShifts, holidays) {
   holidays = holidays || new Set();
   const dayIsManual = (r, col) =>
     col === "deployment" ? r.deploymentManual : col === "morning" ? r.morningManual : r.weekendManual;
+  // A cell is IMMOVABLE if the user manually locked it OR the sudoku-first
+  // pre-scan prelocked it (single-available staff). reduceFatigue must never
+  // relocate those. Only the `weekend` column can carry a sudoku lock.
+  const lockedIn = (r, col) => dayIsManual(r, col) || (col === "weekend" && r.weekendSudoku);
   const cols = ["deployment", "morning", "weekend"];
   const asWeekday = (r) => !r.isWeekend;
 
@@ -1260,7 +1326,7 @@ function reduceFatigue(rows, names, unavailable, manualShifts, holidays) {
       const hosts = rows
         .map((r, i) => ({ r, i }))
         .filter(({ r }) => (col === "weekend" ? r.isWeekend : asWeekday(r)))
-        .filter(({ r }) => Boolean(r[col]) && !dayIsManual(r, col));
+        .filter(({ r }) => Boolean(r[col]) && !lockedIn(r, col));
       for (let a = 0; a < hosts.length; a++) {
         for (let b = a + 1; b < hosts.length; b++) {
           const ra = hosts[a].r, rb = hosts[b].r, ia = hosts[a].i, ib = hosts[b].i;
@@ -1281,7 +1347,7 @@ function reduceFatigue(rows, names, unavailable, manualShifts, holidays) {
       const r = rows[i];
       if (r.isWeekend) continue;
       for (const col of ["deployment", "morning"]) {
-        if (!r[col] || dayIsManual(r, col)) continue;
+        if (!r[col] || lockedIn(r, col)) continue;
         const cur = r[col];
         for (const nx of names) {
           if (nx === cur) continue;
@@ -1322,9 +1388,9 @@ function rule10Pass(rows, names, unavailable, holidays, counts) {
     sc === "morning" ? "morning" : sc === "thursday" ? "deployment" : "weekend";
   const leafOf = (sc) => (sc === "thursday" ? "deployment" : sc);
   const manualOf = (r, sc) =>
-    fieldOf(sc) === "morning" ? r.morningManual
-      : fieldOf(sc) === "deployment" ? r.deploymentManual
-      : r.weekendManual;
+    fieldOf(sc) === "morning" ? (r.morningManual)
+      : fieldOf(sc) === "deployment" ? (r.deploymentManual)
+      : (r.weekendManual || r.weekendSudoku); // sudoku-prelocked weekend is immovable here too
   const totalSpread = () => countSpread(counts, names, "total");
 
   // Weekend-shift adjacency (ordered) so successiveness is an O(1) local check.
@@ -1419,12 +1485,174 @@ function rule10Pass(rows, names, unavailable, holidays, counts) {
   }
 }
 
+/* ------------------------- Manual cell overrides + rule reporting --------- */
+
+// Annotate every schedule cell with the rule(s) it violates — "warn, don't
+// forbid". Runs AFTER buildSchedule; pure read-only (no count mutation). Writes,
+// per row:
+//   row.morningViol      : [string, ...]  rules the morning cell breaks
+//   row.deploymentViol   : [string, ...]  rules the deployment cell breaks
+//   row.weekendViol      : [string, ...]  rules the weekend cell breaks
+// These are what renderPreview surfaces (e.g. "violates: rest rule (morning
+// 9/5 by Thursday deploy 9/4)"). A user HARD-OVERRIDE that puts an unavailable
+// person on shift is therefore accepted, but flagged here.
+function annotateViolations(rows, names, unavailable, holidays) {
+  unavailable = unavailable || {};
+  holidays = holidays || new Set();
+  const byDate = {};
+  for (const r of rows) byDate[r.date] = r;
+  const deplByDay = {};    // iso -> person deployed that day
+  const weekendByDay = {}; // iso -> person doing weekend support that day (incl holidays)
+  for (const r of rows) { if (r.deployment) deplByDay[r.date] = r.deployment; }
+  for (const r of rows) { if (r.weekend) weekendByDay[r.date] = r.weekend; }
+  // Ordered list of weekend/holiday days so we can check successiveness.
+  const wsDays = rows.filter((r) => r.isWeekend).map((r) => r.date);
+  const prevWs = (iso) => {
+    const i = wsDays.indexOf(iso);
+    for (let k = i - 1; k >= 0; k--) { if (weekendByDay[wsDays[k]]) return weekendByDay[wsDays[k]]; }
+    return null;
+  };
+  const nextWs = (iso) => {
+    const i = wsDays.indexOf(iso);
+    for (let k = i + 1; k < wsDays.length; k++) { if (weekendByDay[wsDays[k]]) return weekendByDay[wsDays[k]]; }
+    return null;
+  };
+  // Per-day role count (for the 3-shifts-in-2-days overload check).
+  const roles = {}; // iso -> { name: count }
+  for (const r of rows) {
+    roles[r.date] = {};
+    if (r.morning) roles[r.date][r.morning] = 1;
+    if (r.deployment) roles[r.date][r.deployment] = (roles[r.date][r.deployment] || 0) + 1;
+    if (r.weekend) roles[r.date][r.weekend] = (roles[r.date][r.weekend] || 0) + 1;
+  }
+  const broke = (viol, msg) => { if (!viol.includes(msg)) viol.push(msg); };
+
+  for (const r of rows) {
+    const vM = (r.morningViol = r.morningViol || []);
+    const vD = (r.deploymentViol = r.deploymentViol || []);
+    const vW = (r.weekendViol = r.weekendViol || []);
+    const prev = byDate[dayPlus(r.date, -1)];
+    const prevDepl = prev ? prev.deployment : null;
+    const prevWeek = prev ? prev.weekend : null;
+
+    // ---- Availability (the ONLY hard rule; overridden cells still warned) ----
+    if (r.morning && unavailable[r.morning] && unavailable[r.morning][r.date])
+      broke(vM, `unavailable: ${r.morning} is marked unavailable on ${r.label}`);
+    if (r.deployment && unavailable[r.deployment] && unavailable[r.deployment][r.date])
+      broke(vD, `unavailable: ${r.deployment} is marked unavailable on ${r.label}`);
+    if (r.weekend && unavailable[r.weekend] && unavailable[r.weekend][r.date])
+      broke(vW, `unavailable: ${r.weekend} is marked unavailable on ${r.label}`);
+
+    // ---- Day-type: the wrong shift on the wrong kind of day ----
+    if (r.isWeekend) {
+      if (r.morning) broke(vM, "day-type: Morning on a weekend/holiday (unless manually set)");
+      if (r.deployment && !r.deploymentManual) broke(vD, "day-type: Deployment on a weekend/holiday (unless manually set)");
+    } else if (r.weekend && !r.weekendManual) {
+      broke(vW, "day-type: Weekend support on a working day (unless manually set)");
+    }
+
+    // ---- Rest rule: Morning the day after a Deployment or Weekend ----
+    if (r.morning && (prevDepl === r.morning || prevWeek === r.morning) && !r.morningForced)
+      broke(vM, `rest rule: ${r.morning} worked ${prevDepl === r.morning ? "Deployment" : "Weekend"} yesterday (${dayPlus(r.date, -1)})`);
+
+    // ---- Rule 1: Weekend person must differ from yesterday's Deployment ----
+    if (r.weekend && prevDepl === r.weekend && !r.weekendForced)
+      broke(vW, `Rule 1: ${r.weekend} did Deployment yesterday (${dayPlus(r.date, -1)})`);
+
+    // ---- Successiveness: differ from prev & next adjacent weekend-shift person ----
+    if (r.weekend) {
+      const p = prevWs(r.date), n = nextWs(r.date);
+      if (p === r.weekend && !r.weekendForced)
+        broke(vW, `successiveness: ${r.weekend} also covered the previous weekend/holiday (${p})`);
+      if (n === r.weekend && !r.weekendForced)
+        broke(vW, `successiveness: ${r.weekend} also covers the next weekend/holiday`);
+    }
+
+    // ---- Same-day overlap: person double-booked into weekend + a weekday duty ----
+    if (r.weekend && (r.weekend === r.morning || r.weekend === r.deployment) && !r.weekendForced)
+      broke(vW, "double-book: same person also does Morning/Deployment same day");
+
+    // ---- Same-day Morning + Deployment by one person ----
+    if (r.morning && r.deployment && r.morning === r.deployment)
+      broke(vM, `overload: ${r.morning} pulls both Morning & Deployment this day`);
+    if (r.morning && r.deployment && r.morning === r.deployment)
+      broke(vD, `overload: ${r.deployment} pulls both Morning & Deployment this day`);
+
+    // ---- 3 duties in a rolling 2-day window (tandem overload) ----
+    const prevRoles = roles[dayPlus(r.date, -1)];
+    if (prevRoles) {
+      const mine = prevRoles && roles[r.date];
+      if (mine) {
+        for (const n of Object.keys(prevRoles)) {
+          const two = (prevRoles[n] || 0) + (mine[n] || 0);
+          if (two >= 3) {
+            const bit = `overload: ${n} has ${two} shifts across ${r.label} & yesterday`;
+            if (mine[n] && r.morning === n) broke(vM, bit);
+            if (mine[n] && r.deployment === n) broke(vD, bit);
+            if (mine[n] && r.weekend === n) broke(vW, bit);
+          }
+        }
+      }
+    }
+  }
+}
+
+// Commit an individual Preview cell edit into `manualOverrides` and refresh.
+// `col` is "morning" | "deployment" | "weekend"; `value` is a colleague name
+// ('' to clear). Blanking removes the override so the scheduler owns the cell.
+function setManualOverride(iso, col, value) {
+  const v = typeof value === "string" ? value.trim() : "";
+  if (!manualOverrides[iso]) manualOverrides[iso] = {};
+  manualOverrides[iso][col] = v;
+  if (Object.keys(manualOverrides[iso]).every((k) => manualOverrides[iso][k] === "")) {
+    delete manualOverrides[iso]; // all edited columns cleared -> restore scheduler control
+  }
+  updateAll();
+}
+
+// Build a <select> for inline editing of a Preview cell. Options = all
+// colleagues + a blank "clear" option. Colleagues unavailable that day are
+// greyed-out (disabled) so the user is discouraged from assigning them, though
+// the current override (if any) is still selectable so it can be edited/cleared.
+function editableCellSelect(iso, col, names, unavailable) {
+  const sel = document.createElement("select");
+  sel.className = "cell-edit-select";
+  const blank = document.createElement("option");
+  blank.value = "";
+  blank.textContent = "— clear —";
+  sel.appendChild(blank);
+  for (const n of names) {
+    const opt = document.createElement("option");
+    opt.value = n;
+    opt.textContent = n;
+    // An unavailable staff member is greyed out for the shift they can't do.
+    if (unavailable && unavailable[n] && unavailable[n][iso]) {
+      opt.disabled = true;
+      opt.textContent = `${n} (unavailable)`;
+    }
+    sel.appendChild(opt);
+  }
+  sel.dataset.iso = iso;
+  sel.dataset.col = col;
+  sel.addEventListener("change", () => {
+    setManualOverride(sel.dataset.iso, sel.dataset.col, sel.value);
+  });
+  return sel;
+}
+
 /* ------------------------- Preview rendering ----------------------------- */
 
-function renderPreview(rows, namesList) {
+function renderPreview(rows, namesList, unavailable) {
   const wrap = document.getElementById("preview-wrap");
   const tbody = document.getElementById("preview-tbody");
   tbody.innerHTML = "";
+  // Column index -> the row field + shift name it edits. Columns 1..3 (Morning,
+  // Deployment, Weekend) are user-editable; Date(0) and Unavailable(4) are not.
+  const editCols = [
+    { i: 1, field: "morning" },
+    { i: 2, field: "deployment" },
+    { i: 3, field: "weekend" },
+  ];
   for (const r of rows) {
     const tr = document.createElement("tr");
     if (r.isWeekend) tr.className = "weekend-row";
@@ -1432,10 +1660,9 @@ function renderPreview(rows, namesList) {
     const cells = [r.label, r.morning, r.deployment, r.weekend, r.notAvailable];
     cells.forEach((v, i) => {
       const td = document.createElement("td");
-      td.textContent = v || "";
       if (i === 0) td.className = "date-cell";
       if (i === 4 && v) td.className = "avail-cell";
-      // Manual overrides are marked bold (morning=1, deployment=2, weekend=3).
+      // Manual overrides / saved locks are marked bold (cols 1..3).
       const manual =
         (i === 1 && r.morningManual) ||
         (i === 2 && r.deploymentManual) ||
@@ -1444,10 +1671,41 @@ function renderPreview(rows, namesList) {
       // A staff cell that carries a duty today gets flagged red when the day could
       // not avoid a tiring (consecutive / double-shift / overload) pattern.
       if (flagged && i >= 1 && i <= 3 && v) td.classList.add("flag-cell");
+
+      if (editCols.some((c) => c.i === i)) {
+        // Editable staff cell: clicking swaps it for an inline dropdown so the
+        // user can hand-assign / clear right in the table.
+        td.classList.add("cell-edit");
+        td.dataset.iso = r.date;
+        td.dataset.field = editCols.find((c) => c.i === i).field;
+        td.textContent = v || "";
+        // Surface the rule(s) this cell violates (e.g. from a user hard-override
+        // that forced an unavailable person or broke rest/successiveness). This
+        // is a WARNING — the change is honored, never forbidden.
+        const field = editCols.find((c) => c.i === i).field;
+        const violKey = field === "morning" ? "morningViol" : field === "deployment" ? "deploymentViol" : "weekendViol";
+        const viols = r[violKey];
+        if (viols && viols.length) {
+          td.classList.add("rule-viol"); // distinct amber warning styling
+          td.title = "⚠ violates:\n" + viols.join("\n");
+        } else {
+          td.title = "Click to edit";
+        }
+        td.addEventListener("click", () => {
+          if (td.querySelector("select")) return; // dropdown already open
+          const sel = editableCellSelect(r.date, td.dataset.field, namesList, unavailable);
+          // Preselect the current value (if it is still a valid option).
+          if (v) sel.value = v;
+          td.textContent = "";
+          td.appendChild(sel);
+          sel.focus();
+        });
+      } else {
+        td.textContent = v || "";
+      }
       tr.appendChild(td);
     });
     if (flagged) {
-      // Flag the date cell too and give the row a readable "must bear" tooltip.
       tr.children[0].classList.add("flag-date");
       tr.children[0].title = r.forced.join("\n");
     }
@@ -1705,6 +1963,15 @@ function downloadXLS(rows, counts, namesList, unavailable, start, end) {
 
 let records = []; // {name, start(iso), end(iso), note}
 
+// Manual cell overrides entered by the user directly in the Preview table.
+// Key = ISO date; value = only the columns the user changed:
+//   { morning?: name | "", deployment?: name | "", weekend?: name | "" }
+// An absent key means "follow the generated schedule"; an empty-string value
+// means the user explicitly CLEARED that cell. Applied on top of the scheduler
+// output (after all buildSchedule passes) so the user always has the final say.
+// In-memory only, like `records` (reset on reload).
+let manualOverrides = {}; // { iso: { morning?, deployment?, weekend? } }
+
 function loadHKHolidays() {
   if (hkLoading) return; // never overlap fetches
   hkLoading = true;
@@ -1788,10 +2055,35 @@ function updateAll() {
 
   const mPlusDEl = document.getElementById("mplusd");
   const mPlusDAccepted = mPlusDEl ? new Set(parseNames(mPlusDEl.value)) : new Set();
+
+  // ---- Merge the user's inline cell edits into the scheduler INPUT ----
+  // A cell edit becomes a hard lock ({override:true}) inside `manualShifts`,
+  // so buildSchedule recomputes the WHOLE range around it (方案 A): the lock is
+  // honored even if the person is unavailable that day (warn, don't forbid),
+  // and every OTHER cell is re-assigned to fit. This replaces the old "patch
+  // the output afterwards" override layer.
+  for (const iso of Object.keys(manualOverrides)) {
+    const over = manualOverrides[iso];
+    if (iso < s || iso > e) continue; // out of range: leave stored but unused
+    for (const col of ["morning", "deployment", "weekend"]) {
+      if (!(col in over)) continue;
+      const name = over[col].trim ? over[col].trim() : over[col];
+      // "clear" (''): no override on this column → scheduler re-owns it.
+      if (!name) continue;
+      const bucket = manualShifts[col] = manualShifts[col] || {};
+      // User hard-override wins over any derived manual lock / first-wins.
+      bucket[iso] = { name, manual: true, override: true };
+    }
+  }
+
   const { rows, counts } = buildSchedule(s, e, names, holidays, unavailable, manualShifts, { mPlusDAccepted });
 
+  // Annotate every cell with the rule(s) it violates (warn, don't forbid). Pure
+  // read-only pass; attaches {morningViol, deploymentViol, weekendViol} strings.
+  annotateViolations(rows, names, unavailable, holidays);
+
   // Swap the swapped start/end back into the download filename.
-  renderPreview(rows);
+  renderPreview(rows, names, unavailable);
   renderCounts(names, counts);
   renderRecordsList();
   renderMatrix(rows, names, unavailable);
