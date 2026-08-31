@@ -656,6 +656,32 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
     }
   }
 
+  // ---- "Sudoku-first" pre-scan, WORKDAY variant ------------------------------
+  // Same single-available logic, but for workday Morning + Deployment: when
+  // exactly one colleague is available on a workday they are the UNIQUE cover
+  // for BOTH cells, so prelock them into the m+d double up-front. The greedy
+  // consumes this (below) and post-passes (`lockedIn`) treat it as immovable.
+  // A manual Morning/Deployment lock that is ACTUALLY honored (holder available
+  // or user-hard-override) for a DIFFERENT person means the pair already has a
+  // distinct occupant, so no prelock. A dropped manual lock (holder unavailable
+  // and not overridden) is ignored — the sole-available colleague must still be
+  // prelocked (mirrors the weekend pre-scan's manual treatment).
+  const availableOn = (n, day) => !(unavailable[n] && unavailable[n][day]);
+  const sudokuWeekday = {};   // iso -> name (sole-available person, prelocked as m+d)
+  for (const day of weekdays) {
+    const mdl = manualDeployment[day];
+    const mml = manualMorning[day];
+    const held = (lock) => lock && lock.name && (availableOn(lock.name, day) || lock.override);
+    const heldMdl = held(mdl), heldMml = held(mml);
+    // Harden: scoop only the single-available case with no distinct manual occupant.
+    const avail = names.filter((n) => availableOn(n, day));
+    if (avail.length === 1) {
+      const sole = avail[0];
+      const conflicts = (heldMdl && mdl.name !== sole) || (heldMml && mml.name !== sole);
+      if (!conflicts) sudokuWeekday[day] = sole;
+    }
+  }
+
   for (const day of days) {
     // A day is a WORK day (Morning + Deployment) only when it is neither a
     // calendar weekend nor a public holiday. Holidays — even when they fall on
@@ -681,6 +707,7 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
     let morningForced = false;
     let deployment = "";
     let deploymentManual = false;
+    let deploymentSudoku = false;
     let weekendForced = false;
     let weekendSudoku = false;
 
@@ -707,7 +734,22 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
     // out-rank a small evenness gap (a returning colleague still catches up, but
     // spread out) — only a big count imbalance can force consecutive work.
     if (weekdayShift) {
-      const dCands = deplLocked ? [manualDeployForDay] : names.filter((n) => availableFor(n));
+      const sd = sudokuWeekday[day];
+      if (sd && !deplLocked && !mornLocked) {
+        // Workday "sudoku-first": the pre-scan locked the sole-available colleague
+        // into BOTH the Morning and Deployment cells (they are the unique cover for
+        // the day). Assign directly, skip the fair-pair search (there is no choice),
+        // and flag forced so validateAll carves out any rest/successiveness breach
+        // it causes. deploymentSudoku marks it immovable to the post-passes.
+        deployment = sd;
+        deploymentSudoku = true;
+        morning = sd;
+        morningForced = true;
+        addCount(counts, deployment, "deployment", 1);
+        if (isoWeekday(day) === 3) addCount(counts, deployment, "thursday", 1);
+        addCount(counts, morning, "morning", 1);
+      } else {
+        const dCands = deplLocked ? [manualDeployForDay] : names.filter((n) => availableFor(n));
       // Hard rest rule: a person who did Deployment or Weekend Support yesterday
       // is blocked from today's Morning (Deployment carries no such tomorrow
       // block, so the deployment candidate pool is unaffected). A manual Morning
@@ -807,6 +849,7 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
         addCount(counts, deployment, "deployment", 1);
         if (isoWeekday(day) === 3) addCount(counts, deployment, "thursday", 1);
         addCount(counts, morning, "morning", 1);
+      }
       }
     } else if (deplLocked) {
       // Weekend / holiday: a manual Deployment lock is still honored (no auto
@@ -932,6 +975,7 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
       morningForced,
       deployment,
       deploymentManual,
+      deploymentSudoku,
       weekend,
       weekendManual,
       weekendForced,
@@ -1103,7 +1147,12 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
   // consecutive-Deployment / three-in-two / same-day-overlap are stripped out.
   // Whatever patterns remain after this pass are the genuinely-unavoidable cost of
   // keeping the counts fair, and are flagged red below for the staff to bear.
-  reduceFatigue(rows, names, unavailable, manualShifts, holidays);
+  reduceFatigue(rows, names, unavailable, manualShifts, holidays, mPlusDAccepted);
+  // Then relieve the days adjacent to a forced same-day M+D row (workday sudoku
+  // prelock) by relocating any avoidable X-1 Deployment / X+1 Morning off that
+  // colleague. Must run AFTER reduceFatigue (which would otherwise "fix" the
+  // relaxation) and BEFORE rule10Pass (which re-balances from this schedule).
+  neighborRelax(rows, names, unavailable, mPlusDAccepted);
   // relocate moves in the fatigue pass change individual counts, so recompute the
   // per-person shift totals from the final rows before reporting them.
   const finalCounts = newCounts(names);
@@ -1121,7 +1170,7 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
   // Rule 10: cross-axis comprehensive fairness pass (transfers allow only total
   // spread reduction, never worsening any per-scope spread past MAX_SPREAD).
   rule10Pass(rows, names, unavailable, holidays, counts);
-  computeFlags(rows, names); // sets row.forced (possibly empty) on every row
+  computeFlags(rows, names, mPlusDAccepted); // sets row.forced (possibly empty) on every row
 
   return { rows, counts };
 }
@@ -1148,18 +1197,37 @@ function rolesByDayFromRows(rows) {
 // bear it" message into row.forced. Also return the total weighted flag count,
 // which the swap loop uses as its strictly-decreasing objective (consecutive
 // Deployment is the most-tiring, hence heaviest weight).
-function computeFlags(rows, names) {
+function computeFlags(rows, names, mPlusDAccepted) {
+  mPlusDAccepted = mPlusDAccepted || new Set();
   const roleMap = rolesByDayFromRows(rows);
-  const deplByDay = {};
-  for (const r of rows) if (r.deployment) deplByDay[r.date] = r.deployment;
+  const byDate = {};
+  for (const r of rows) byDate[r.date] = r;
   let total = 0;
   for (const r of rows) {
     const forced = [];
-    // 1. Same-day Morning + Deployment by one person.
-    if (r.morning && r.deployment && r.morning === r.deployment) {
-      forced.push(`${r.morning} bears both Morning Health Check & Deployment this day (no fair alternative).`);
+    const prevRow = byDate[dayPlus(r.date, -1)];
+    // NOTE: same-day Morning + Deployment is intentionally NOT flagged red —
+    // per the user's rule it is a tolerated compromise for EVERYONE (not just
+    // the mPlusDAccepted volunteers). Only consecutive-M is the "least-acceptable"
+    // red. consecutive-D is likewise a tolerated compromise and is not flagged.
+    // 2. Consecutive 2-day MORNING — the LEAST-acceptable pattern (user ladder):
+    //    the same person does Morning on back-to-back workdays. A weekend/holiday
+    //    between breaks adjacency (that intermediate day has no morning, so
+    //    prevRow.morning is empty and cannot match). Soft avoidance: flagged red
+    //    only when it could not be avoided without breaking evenness / coverage.
+    if (r.morning && prevRow && prevRow.morning === r.morning) {
+      forced.push(`${r.morning} does Morning Health Check on consecutive days (${dateLabel(prevRow.date)} & ${r.label}).`);
+      total += 4;
     }
-    // 2. >=3 duties by one person across two consecutive days.
+    // 4. Rest-rule / Rule-1 overburden — flagged red EVEN when forced. When the
+    //    culprit is the sole-available colleague these are genuinely unavoidable,
+    //    but the staff must still SEE and bear the extra fatigue, so they are red
+    //    regardless of morningForced/weekendForced (i.e. no forced exemption here).
+    if (r.morning && prevRow && (prevRow.deployment === r.morning || prevRow.weekend === r.morning))
+      forced.push(`${r.morning} must do Morning the day after ${prevRow.deployment === r.morning ? "Deployment" : "Weekend Support"} (${dateLabel(prevRow.date)}).`);
+    if (r.weekend && prevRow && prevRow.deployment === r.weekend)
+      forced.push(`${r.weekend} does Weekend Support the day after Deployment (${dateLabel(prevRow.date)}).`);
+    // 3. >=3 duties by one person across two consecutive days (tandem overload).
     const prev = dayPlus(r.date, -1);
     if (prev && roleMap[prev]) {
       const mine = roleMap[prev] || {};
@@ -1172,12 +1240,9 @@ function computeFlags(rows, names) {
         }
       }
     }
-    // 3. Consecutive Deployment (today + yesterday).
-    if (r.deployment && deplByDay[prev] === r.deployment) {
-      forced.push(`${r.deployment} deploys on consecutive days — tiring (after-hours duty).`);
-      total += 3;
-    }
-    if (r.morning && r.deployment && r.morning === r.deployment) total += 1;
+    // NOTE: consecutive-DEPLOYMENT is intentionally NOT flagged red — the user
+    // classifies it as a tolerated compromise (same status as Andy's accepted
+    // m+d), so it is deliberately omitted here to reduce red text.
     r.forced = forced;
   }
   return total;
@@ -1237,22 +1302,103 @@ function validateAll(rows, names, unavailable) {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Neighbor-relax: after reduceFatigue, relieve the days ADJACENT to a forced
+// same-day M+D row (the workday-sudoku prelock). The forced person P owns both
+// cells on X — if P is ALSO on X-1's Deployment or X+1's Morning, they would be
+// grinding 3 days running. Each such (avoidably) adjacent assignment is moved to
+// another available colleague who passes validateAll, preferably an
+// mPlusDAccepted volunteer (e.g. Andy), and only when it never increases the
+// red-count (consecutive-M / d+m / w+m / d+s) nor blows a scope's spread past
+// MAX_SPREAD. Runs AFTER reduceFatigue (so reduceFatigue never "fixes" the
+// relaxation back into a same-day double) and BEFORE rule10Pass (which re-balances
+// from this relaxed schedule). Every move is a single-cell relocate; counts are
+// re-derived by the caller afterwards.
+// ---------------------------------------------------------------------------
+function neighborRelax(rows, names, unavailable, mPlusDAccepted) {
+  mPlusDAccepted = mPlusDAccepted || new Set();
+  const byDate = {};
+  for (const r of rows) byDate[r.date] = r;
+  const MAX_SPREAD = 2;
+  const redCount = () => {
+    let c = 0;
+    for (const r of rows) {
+      const py = byDate[dayPlus(r.date, -1)];
+      if (r.morning && py && (py.deployment === r.morning || py.weekend === r.morning)) c++; // d+m / w+m
+      if (r.weekend && py && py.deployment === r.weekend) c++; // d+s
+      if (r.morning && py && py.morning === r.morning) c++; // consecutive-M
+    }
+    return c;
+  };
+  const scopeSpread = (field) => {
+    const t = {};
+    for (const n of names) t[n] = 0;
+    for (const r of rows) { const v = r[field]; if (v) t[v]++; }
+    const nums = names.map((n) => t[n]);
+    return Math.max(...nums) - Math.min(...nums);
+  };
+  // Prefer an mPlusDAccepted target (the volunteer) so the burden lands on a
+  // willing someone, other things equal.
+  const targets = names.slice().sort((a, b) =>
+    mPlusDAccepted.has(a) === mPlusDAccepted.has(b) ? 0 : mPlusDAccepted.has(a) ? -1 : 1
+  );
+  const before = redCount();
+  for (const x of rows) {
+    // Only forced same-day M+D rows (workday sudoku prelock) are the trigger.
+    if (!(x.deploymentSudoku && x.morning && x.deployment && x.morning === x.deployment)) continue;
+    const P = x.morning;
+    // --- X-1 Deployment side ---
+    const p1 = byDate[dayPlus(x.date, -1)];
+    if (p1 && p1.deployment === P && !p1.deploymentManual && !p1.deploymentSudoku) {
+      for (const q of targets) {
+        if (q === P || (unavailable[q] && unavailable[q][p1.date])) continue;
+        const saved = p1.deployment;
+        p1.deployment = q;
+        const valid = validateAll(rows, names, unavailable);
+        const okRed = redCount() <= before;
+        const okSpread = scopeSpread("deployment") <= MAX_SPREAD;
+        p1.deployment = saved;
+        if (valid && okRed && okSpread) { p1.deployment = q; break; }
+      }
+    }
+    // --- X+1 Morning side ---
+    const p2 = byDate[dayPlus(x.date, 1)];
+    if (p2 && p2.morning === P && !p2.morningManual && !p2.deploymentSudoku) {
+      for (const q of targets) {
+        if (q === P || (unavailable[q] && unavailable[q][p2.date])) continue;
+        const saved = p2.morning;
+        p2.morning = q;
+        const valid = validateAll(rows, names, unavailable);
+        const okRed = redCount() <= before;
+        const okSpread = scopeSpread("morning") <= MAX_SPREAD;
+        p2.morning = saved;
+        if (valid && okRed && okSpread) { p2.morning = q; break; }
+      }
+    }
+  }
+}
+
 // Count-preserving local-search pass: relocate WHICH day a person works a given
 // shift column between two non-manual days (a 2-way swap), keeping every person's
 // per-shift total identical (so final evenness is provably untouched), while
 // strictly decreasing the weighted tiring-flag count. Runs Deployment, then
 // Morning, then Weekend, each as a bounded fixed-point loop. After this, any
 // residual flags are genuinely-unavoidable (kept red).
-function reduceFatigue(rows, names, unavailable, manualShifts, holidays) {
+function reduceFatigue(rows, names, unavailable, manualShifts, holidays, mPlusDAccepted) {
   // Optional 6th-arg shape reused for the manual-lock gate.
   manualShifts = manualShifts || {};
   holidays = holidays || new Set();
+  mPlusDAccepted = mPlusDAccepted || new Set();
   const dayIsManual = (r, col) =>
     col === "deployment" ? r.deploymentManual : col === "morning" ? r.morningManual : r.weekendManual;
   // A cell is IMMOVABLE if the user manually locked it OR the sudoku-first
   // pre-scan prelocked it (single-available staff). reduceFatigue must never
-  // relocate those. Only the `weekend` column can carry a sudoku lock.
-  const lockedIn = (r, col) => dayIsManual(r, col) || (col === "weekend" && r.weekendSudoku);
+  // relocate those. The weekend column carries a weekend sudoku lock; a weekday
+  // sudoku lock forces BOTH the deployment and morning cells of that day.
+  const lockedIn = (r, col) =>
+    dayIsManual(r, col) ||
+    (col === "weekend" && r.weekendSudoku) ||
+    (r.deploymentSudoku && (col === "deployment" || col === "morning"));
   const cols = ["deployment", "morning", "weekend"];
   const asWeekday = (r) => !r.isWeekend;
 
@@ -1270,8 +1416,8 @@ function reduceFatigue(rows, names, unavailable, manualShifts, holidays) {
     return c;
   };
   const spread = (arr) => Math.max(...arr) - Math.min(...arr);
-  const deplByDay = () => {
-    const d = {}; for (const r of rows) if (r.deployment) d[r.date] = r.deployment; return d;
+  const morningByDay = () => {
+    const m = {}; for (const r of rows) if (r.morning) m[r.date] = r.morning; return m;
   };
   const roleByDay = () => {
     const m = {};
@@ -1286,11 +1432,16 @@ function reduceFatigue(rows, names, unavailable, manualShifts, holidays) {
 
   // Objective. The CSV spread of EVERY scope (m, d, t, wsat, wsun, h) is held to
   // at most MAX_SPREAD (hard cap → huge penalty); within that, we minimize a
-  // weighted combo of the same-day M+D "red" days and consecutive- Deployment
-  // (the user's most-tiring concern). This lets the pass trade a little spread
-  // to remove red flags, but never lets any scope drift past "接近平均".
+  // weighted combo of the flag-worthy tiring patterns, ordered by how the team
+  // ranks them (least→most acceptable):
+  //   0   — consecutive Deployment, and a same-day M+D held by an mPlusDAccepted
+  //         volunteer (e.g. Andy): tolerated compromises, cost nothing.
+  //   LOW — a same-day M+D held by a NON-volunteer (a real red flag).
+  //   HIGH— two consecutive days of Morning (the least-acceptable red).
+  // The pass trades a little spread to remove red flags, but never lets any
+  // scope drift past "接近平均".
   const MAX_SPREAD = 2;
-  const RED_W = 8, CONSEC_W = 12, SPREAD_W = 1;
+  const RED_W = 8, CONS_M_W = 16, SPREAD_W = 1;
   const SCOPE_KEYS = ["morning", "deployment", "thursday", "wsat", "wsun", "hcount"];
   const cost = () => {
     const c = countsOf();
@@ -1300,13 +1451,20 @@ function reduceFatigue(rows, names, unavailable, manualShifts, holidays) {
       if (s > MAX_SPREAD) hard += 1e6;
       totalSpread += s;
     }
-    let red = 0, cc = 0;
-    const dp = deplByDay();
+    let red = 0, cm = 0;
+    const mp = morningByDay();
     for (const r of rows) {
-      if (r.morning && r.deployment && r.morning === r.deployment) red++;
-      if (r.deployment && dp[dayPlus(r.date, -1)] === r.deployment) cc++;
+      // A same-day M+D double held by a colleague who EXPLICITLY accepts it
+      // (mPlusDAccepted, e.g. Andy) costs 0 red — to them it is the relief valve,
+      // not a violation. The relocate pass therefore prefers to reroute an
+      // unavoidable double OFF a non-volunteer and ONTO Andy (strictly lowers
+      // cost by RED_W), while the MAX_SPREAD cap keeps every scope even → 公平.
+      if (r.morning && r.deployment && r.morning === r.deployment && !mPlusDAccepted.has(r.morning)) red++;
+      // Two consecutive workday Mornings by the same person = the least-accepted
+      // pattern; HIGH weight so the pass avoids it hardest.
+      if (r.morning && mp[dayPlus(r.date, -1)] === r.morning) cm++;
     }
-    return hard + totalSpread * SPREAD_W + red * RED_W + cc * CONSEC_W;
+    return hard + totalSpread * SPREAD_W + red * RED_W + cm * CONS_M_W;
   };
 
   // A JOINT local-search loop. Each iteration scans TWO kinds of moves and
@@ -1496,9 +1654,10 @@ function rule10Pass(rows, names, unavailable, holidays, counts) {
 // These are what renderPreview surfaces (e.g. "violates: rest rule (morning
 // 9/5 by Thursday deploy 9/4)"). A user HARD-OVERRIDE that puts an unavailable
 // person on shift is therefore accepted, but flagged here.
-function annotateViolations(rows, names, unavailable, holidays) {
+function annotateViolations(rows, names, unavailable, holidays, mPlusDAccepted) {
   unavailable = unavailable || {};
   holidays = holidays || new Set();
+  mPlusDAccepted = mPlusDAccepted || new Set();
   const byDate = {};
   for (const r of rows) byDate[r.date] = r;
   const deplByDay = {};    // iso -> person deployed that day
@@ -1534,6 +1693,7 @@ function annotateViolations(rows, names, unavailable, holidays) {
     const prev = byDate[dayPlus(r.date, -1)];
     const prevDepl = prev ? prev.deployment : null;
     const prevWeek = prev ? prev.weekend : null;
+    const prevMorning = prev ? prev.morning : null;
 
     // ---- Availability (the ONLY hard rule; overridden cells still warned) ----
     if (r.morning && unavailable[r.morning] && unavailable[r.morning][r.date])
@@ -1552,11 +1712,22 @@ function annotateViolations(rows, names, unavailable, holidays) {
     }
 
     // ---- Rest rule: Morning the day after a Deployment or Weekend ----
-    if (r.morning && (prevDepl === r.morning || prevWeek === r.morning) && !r.morningForced)
+    // Flagged even when forced (sole-available) — the staff must still see and
+    // bear the extra fatigue, so there is no morningForced exemption here.
+    if (r.morning && (prevDepl === r.morning || prevWeek === r.morning))
       broke(vM, `rest rule: ${r.morning} worked ${prevDepl === r.morning ? "Deployment" : "Weekend"} yesterday (${dayPlus(r.date, -1)})`);
 
+    // ---- Consecutive 2-day Morning (the least-acceptable pattern) ----
+    // The same person does Morning on back-to-back workdays. A weekend/holiday
+    // between breaks adjacency (that intermediate day has no morning, so
+    // prevMorning is empty and cannot match). Soft warning (warn, don't forbid).
+    if (r.morning && prevMorning === r.morning && !r.morningForced)
+      broke(vM, `consecutive morning: ${r.morning} also did Morning Health Check yesterday (${dayPlus(r.date, -1)})`);
+
     // ---- Rule 1: Weekend person must differ from yesterday's Deployment ----
-    if (r.weekend && prevDepl === r.weekend && !r.weekendForced)
+    // Flagged even when forced (sole-available) — the extra fatigue is still borne
+    // and must surface for the staff to see, so no weekendForced exemption here.
+    if (r.weekend && prevDepl === r.weekend)
       broke(vW, `Rule 1: ${r.weekend} did Deployment yesterday (${dayPlus(r.date, -1)})`);
 
     // ---- Successiveness: differ from prev & next adjacent weekend-shift person ----
@@ -1572,11 +1743,12 @@ function annotateViolations(rows, names, unavailable, holidays) {
     if (r.weekend && (r.weekend === r.morning || r.weekend === r.deployment) && !r.weekendForced)
       broke(vW, "double-book: same person also does Morning/Deployment same day");
 
-    // ---- Same-day Morning + Deployment by one person ----
-    if (r.morning && r.deployment && r.morning === r.deployment)
-      broke(vM, `overload: ${r.morning} pulls both Morning & Deployment this day`);
-    if (r.morning && r.deployment && r.morning === r.deployment)
-      broke(vD, `overload: ${r.deployment} pulls both Morning & Deployment this day`);
+    // ---- Same-day Morning + Deployment by one person. Per the user's rule this
+    // is NOT flagged red at all — neither for a non-volunteer nor for an accepted
+    // one. It is a tolerated compromise the optimizer only *tries to avoid* via the
+    // reduceFatigue cost ladder, but never surfaces as a violation. (Consecutive-M
+    // is the single least-acceptable pattern, flagged above; consecutive-D is the
+    // other tolerated compromise and is deliberately not flagged either.)
 
     // ---- 3 duties in a rolling 2-day window (tandem overload) ----
     const prevRoles = roles[dayPlus(r.date, -1)];
