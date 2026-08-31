@@ -323,6 +323,19 @@ function weekendScope(iso, holidays) {
   return "hcount"; // holiday falling on a weekday
 }
 
+// Successiveness relaxation (user rule): a colleague MAY be the weekend-support
+// on two ADJACENT weekend-shift days when those days sit in DIFFERENT scopes and
+// NEITHER is the public-holiday scope (hcount) — i.e. the calendar Sat+Sun
+// weekend (wsat + wsun). Same-scope recurrence (two Saturdays, two Sundays, two
+// weekday-holidays) and any pair touching a weekday public holiday stay blocked.
+// This subsumes the old "Sat != Sun" rule, which previously forbade a normal
+// Sat+Sun stint. Only meaningful on days where needsWeekendShift is true.
+function successivenessAllowed(isoA, isoB, holidays) {
+  const a = weekendScope(isoA, holidays);
+  const b = weekendScope(isoB, holidays);
+  return a !== b && a !== "hcount" && b !== "hcount";
+}
+
 /* Parse the 1823.gov.hk iCal payload into per-year Sets of ISO holiday dates.
    Payload shape (one request, ALL years):
      { vcalendar: [ { vevent: [ { dtstart: ["20260101",{value:"DATE"}], ... } ] } ] }
@@ -584,17 +597,18 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
     return deploymentByDay[prev] === person;
   };
 
-  // General successiveness ("h, wsat, wsun cannot be successive person"):
-  // the weekend-support person on a weekend-shift day must differ from the
-  // support person on the PREVIOUS adjacent weekend-shift day (forward
-  // processing automatically guarantees the "next" side too, and subsumes the
-  // old Sat != Sun rule). weekendShiftDays lists weekend-shift days in order.
+  // General successiveness (relaxed). A person may repeat on two ADJACENT
+  // weekend-shift days ONLY when those days sit in different scopes with neither
+  // being the holiday scope (wsat+wsun — the calendar weekend) — see
+  // successivenessAllowed. Same-scope / holiday-touching repeats stay blocked.
+  // Returns the nearest prior populated support as { day, person }; the DATE is
+  // needed so the caller can compare scopes. weekendShiftDays is in order.
   const weekendShiftDays = days.filter((d) => needsWeekendShift(d, holidays));
   const prevSupport = (day) => {
     const idx = weekendShiftDays.indexOf(day);
     for (let k = idx - 1; k >= 0; k--) {
       const d = weekendShiftDays[k];
-      if (weekendPersonByDay[d]) return weekendPersonByDay[d];
+      if (weekendPersonByDay[d]) return { day: d, person: weekendPersonByDay[d] };
     }
     return null;
   };
@@ -886,9 +900,9 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
       } else {
         // Eligible pool: available, not Rule-1-eligible (differs from yesterday's
         // Deployment), differs from today's Deployment person (no double-booking
-        // into both shifts same day), and differs from the previous adjacent
-        // weekend-shift support person ("h, wsat, wsun cannot be successive
-        // person" — this subsumes the old Sat != Sun rule via forward processing).
+        // into both shifts same day), and — for successiveness — differs from the
+        // previous adjacent weekend-shift support person UNLESS that adjacent
+        // pair is a legitimate wsat+wsun weekend (successivenessAllowed).
         const scope = weekendScope(day, holidays);
         const prev = prevSupport(day);
         let pool = names.filter(
@@ -896,7 +910,7 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
             availableFor(n) &&
             n !== deployment &&
             !violatedRule1(day, n) &&
-            n !== prev
+            !(prev && prev.person === n && !successivenessAllowed(prev.day, day, holidays))
         );
         // --- "Sudoku" invariant: a needed shift is ALWAYS filled whenever at
         // least one colleague is available. The successiveness, Rule-1, and
@@ -1004,13 +1018,15 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
       });
     }
   });
-  // Next adjacent weekend-shift support person (known now that all rows exist).
+  // Next adjacent weekend-shift support person {day, person} (known now that
+  // all rows exist). The DATE lets callers compare scopes for the relaxed
+  // successiveness rule (wsat+wsun is fine).
   const nextSupport = (day) => {
     const idx = wsIndex[day];
     if (idx === undefined) return null;
     for (let k = idx + 1; k < weekendShiftDays.length; k++) {
       const d = weekendShiftDays[k];
-      if (weekendPersonByDay[d]) return weekendPersonByDay[d];
+      if (weekendPersonByDay[d]) return { day: d, person: weekendPersonByDay[d] };
     }
     return null;
   };
@@ -1041,8 +1057,11 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
       if (unavailable[cand] && unavailable[cand][w.day]) return false;
       if (violatedRule1(w.day, cand)) return false;
       if (cand === rows[w.idx].deployment) return false; // no same-day double-booking
-      if (cand === prevSupport(w.day)) return false;      // prev successiveness
-      if (cand === nextSupport(w.day)) return false;      // next successiveness
+      // Successiveness: `cand` may repeat from/to an adjacent weekend-shift day
+      // only when that adjacent pair is a legitimate wsat+wsun weekend.
+      const pv = prevSupport(w.day), nx = nextSupport(w.day);
+      if (pv && pv.person === cand && !successivenessAllowed(pv.day, w.day, holidays)) return false;
+      if (nx && nx.person === cand && !successivenessAllowed(w.day, nx.day, holidays)) return false;
       return true;
     };
     // Consecutive-day overlap count across weekend assignments (soft goal only).
@@ -1297,7 +1316,8 @@ function validateAll(rows, names, unavailable) {
   // (e.g. Sunday + Monday public holiday).
   for (let i = 0; i < rows.length - 1; i++) {
     const a = rows[i], b = rows[i + 1];
-    if (a.isWeekend && b.isWeekend && a.weekend && b.weekend && a.weekend === b.weekend && !(a.weekendForced || b.weekendForced)) return false;
+    if (a.isWeekend && b.isWeekend && a.weekend && b.weekend && a.weekend === b.weekend && !(a.weekendForced || b.weekendForced)
+        && !(isWeekendISO(a.date) && isWeekendISO(b.date))) return false;
   }
   return true;
 }
@@ -1591,12 +1611,15 @@ function rule10Pass(rows, names, unavailable, holidays, counts) {
             const py = i > 0 ? rows[i - 1] : null;
             if (py && (py.deployment === to || py.weekend === to)) continue;
           } else if (f === "weekend") {
-            // No same-day double-booking, and successiveness vs adjacent weekend days.
+            // No same-day double-booking, and successiveness vs adjacent weekend
+            // days (relaxed: repeating onto the adjacent day is OK when that pair
+            // is a legitimate wsat+wsun weekend).
             if (r.morning === to || r.deployment === to) continue;
             const idx = wsIndexLocal[r.date];
-            const prevP = idx > 0 ? weekendRows[idx - 1].weekend : null;
-            const nextP = idx < weekendRows.length - 1 ? weekendRows[idx + 1].weekend : null;
-            if (prevP === to || nextP === to) continue;
+            const prevR = idx > 0 ? weekendRows[idx - 1] : null;
+            const nextR = idx < weekendRows.length - 1 ? weekendRows[idx + 1] : null;
+            if (prevR && prevR.weekend === to && !successivenessAllowed(prevR.date, r.date, holidays)) continue;
+            if (nextR && nextR.weekend === to && !successivenessAllowed(r.date, nextR.date, holidays)) continue;
           } else {
             // deployment / thursday donor: don't double-book into the same day's weekend.
             if (r.weekend === to) continue;
@@ -1668,12 +1691,18 @@ function annotateViolations(rows, names, unavailable, holidays, mPlusDAccepted) 
   const wsDays = rows.filter((r) => r.isWeekend).map((r) => r.date);
   const prevWs = (iso) => {
     const i = wsDays.indexOf(iso);
-    for (let k = i - 1; k >= 0; k--) { if (weekendByDay[wsDays[k]]) return weekendByDay[wsDays[k]]; }
+    for (let k = i - 1; k >= 0; k--) {
+      const d = wsDays[k];
+      if (weekendByDay[d]) return { day: d, person: weekendByDay[d] };
+    }
     return null;
   };
   const nextWs = (iso) => {
     const i = wsDays.indexOf(iso);
-    for (let k = i + 1; k < wsDays.length; k++) { if (weekendByDay[wsDays[k]]) return weekendByDay[wsDays[k]]; }
+    for (let k = i + 1; k < wsDays.length; k++) {
+      const d = wsDays[k];
+      if (weekendByDay[d]) return { day: d, person: weekendByDay[d] };
+    }
     return null;
   };
   // Per-day role count (for the 3-shifts-in-2-days overload check).
@@ -1730,13 +1759,17 @@ function annotateViolations(rows, names, unavailable, holidays, mPlusDAccepted) 
     if (r.weekend && prevDepl === r.weekend)
       broke(vW, `Rule 1: ${r.weekend} did Deployment yesterday (${dayPlus(r.date, -1)})`);
 
-    // ---- Successiveness: differ from prev & next adjacent weekend-shift person ----
+    // ---- Successiveness: differ from prev & next adjacent weekend-shift person.
+    // Relaxed: repeating onto the adjacent day is NOT a violation when that
+    // adjacent pair is a legitimate wsat+wsun calendar weekend — so e.g. a Sun(wsun)
+    // followed by the next Sat(wsat) no longer flags. Only same-scope / holiday
+    // repeats (unsuccessiveAllowed) are flagged. ----
     if (r.weekend) {
       const p = prevWs(r.date), n = nextWs(r.date);
-      if (p === r.weekend && !r.weekendForced)
-        broke(vW, `successiveness: ${r.weekend} also covered the previous weekend/holiday (${p})`);
-      if (n === r.weekend && !r.weekendForced)
-        broke(vW, `successiveness: ${r.weekend} also covers the next weekend/holiday`);
+      if (p && p.person === r.weekend && !r.weekendForced && !successivenessAllowed(p.day, r.date, holidays))
+        broke(vW, `successiveness: ${r.weekend} also covered the previous weekend/holiday (${p.day})`);
+      if (n && n.person === r.weekend && !r.weekendForced && !successivenessAllowed(r.date, n.day, holidays))
+        broke(vW, `successiveness: ${r.weekend} also covers the next weekend/holiday (${n.day})`);
     }
 
     // ---- Same-day overlap: person double-booked into weekend + a weekday duty ----

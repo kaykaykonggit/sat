@@ -30,7 +30,8 @@ as plain static files.
   - **Scheduler**: `buildSchedule(start, end, names, holidays, unavailable,
     manualShifts)` -> `{ rows, counts }`. The only place shift-allocation rules
     live (per-scope even distribution on m/d/t/wsat/wsun/h, rest rules,
-    weekend successiveness across adjacent weekend-shift days, availability,
+    weekend successiveness across adjacent weekend-shift days (relaxed to allow
+    a wsat+wsun pair; see `successivenessAllowed`), availability,
     manual-shift handling, Rule-10 total-shift balancing).
   - **Export**: `exportToXLS(rows, counts, names, unavailable)` -> HTML string;
     `downloadXLS(...)` wraps it in a Blob and triggers the download.

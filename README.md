@@ -24,9 +24,11 @@ Deploys as a static site to **Cloudflare Pages** (free) — no server, no backen
     so every colleague gets a similar share of each scope. Surplus Thursday
     deployments fall through to the lowest-Deployment colleague; a cross-axis
     pass reduces the *total* shift spread without breaking any scope's balance.
-  - **Successiveness**: weekend/holiday support is never given to the same
-    person on two consecutive weekend-shift days (includes Sat != Sun, plus
-    e.g. Sunday + the following public-holiday Monday).
+  - **Successiveness**: weekend/holiday support may repeat on two adjacent
+    weekend-shift days only when they fall in different scopes with neither being
+    a weekday public holiday — i.e. a normal Sat+Sun stint (wsat+wsun) is fine.
+    Same-scope recurrence (two Saturdays/Sundays) and Sunday + a following
+    public-holiday Monday stay blocked.
   - **Coverage-first ("Sudoku") rule**: a required shift cell is **never left
     blank while any colleague is available**. Successiveness, the "differ from
     yesterday's Deployment" rule, and same-day double-booking are *preferences* —
