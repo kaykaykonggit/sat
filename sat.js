@@ -1909,6 +1909,78 @@ function renderCounts(namesList, counts) {
   }
 }
 
+// Render a flat, copyable log of every violation / "must-bear" message that the
+// Preview tooltips and matrix flags surface per-cell. Purely informational — the
+// user can read (or copy) the list and hand it back as feedback; nothing here
+// changes the schedule. Aggregates BOTH sources into one table:
+//   • column-specific breaks (row.morningViol / deploymentViol / weekendViol) —
+//     the amber "⚠ violates:" tooltips on editable cells
+//   • forced "must bear it" patterns (row.forced) — the red date/matrix flags
+// Omitted (by design): Manual/override edits that introduce no break, and the
+// tolerated compromises the engine deliberately does NOT flag (same-day m+d,
+// consecutive-Deployment).
+const VIOL_COLS = [
+  { key: "morningViol",    shift: "Morning(M)" },
+  { key: "deploymentViol", shift: "Deployment(D)" },
+  { key: "weekendViol",    shift: "Weekend(W)" },
+];
+function renderViolations(rows) {
+  const panel = document.getElementById("violation-panel");
+  const tbody = document.getElementById("violation-tbody");
+  const summaryEl = document.getElementById("violation-summary");
+  if (!panel || !tbody) return;
+  tbody.innerHTML = "";
+  const lines = []; // { date, label, who, issue } for the table + text log
+
+  for (const r of rows) {
+    // A) Column-specific tooltip violations.
+    for (const c of VIOL_COLS) {
+      const viols = r[c.key];
+      if (viols && viols.length) {
+        const person =
+          (c.key === "morningViol" && r.morning) ||
+          (c.key === "deploymentViol" && r.deployment) ||
+          (c.key === "weekendViol" && r.weekend) ||
+          "?";
+        for (const msg of viols) lines.push({ date: r.date, label: r.label, who: `${person} · ${c.shift}`, issue: msg });
+      }
+    }
+    // B) Forced "must bear it" flags (date cell / matrix).
+    if (r.forced && r.forced.length) {
+      for (const msg of r.forced) {
+        // The message already leads with the colleague(s) name; just tag the source.
+        lines.push({ date: r.date, label: r.label, who: "—", issue: `${msg} [forced]` });
+      }
+    }
+  }
+
+  // Sort chronologically by date (rows are already in order, but stay safe).
+  lines.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  // Summary line + table.
+  if (lines.length) {
+    panel.classList.remove("hidden");
+    const forcedCount = lines.filter((l) => l.issue.includes("[forced]")).length;
+    const violCount = lines.length - forcedCount;
+    summaryEl.textContent =
+      `${lines.length} item(s): ${violCount} column violation(s), ${forcedCount} must-bear (forced) pattern(s). ` +
+      "These are the same messages you see by hovering — copy them below to report why each flag exists.";
+    for (const l of lines) {
+      const tr = document.createElement("tr");
+      [l.label, l.who, l.issue].forEach((v) => {
+        const td = document.createElement("td");
+        if (v === l.who && v === "—") td.className = "muted";
+        td.textContent = v;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    }
+  } else {
+    panel.classList.add("hidden");
+    summaryEl.textContent = "No violations — schedule is fully clean.";
+  }
+}
+
 /* ------------------------- Availability matrix --------------------------- */
 
 function renderMatrix(rows, namesList, unavailable) {
@@ -2259,6 +2331,7 @@ function updateAll() {
   renderCounts(names, counts);
   renderRecordsList();
   renderMatrix(rows, names, unavailable);
+  renderViolations(rows);
 
   // Store for download / preview.
   window.__export = { rows, counts, names, unavailable, manualShifts, start: s, end: e };

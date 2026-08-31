@@ -210,11 +210,18 @@ button.del:hover { background: rgba(192, 57, 43, 0.1); color: var(--danger); }
 
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
-table.preview, table.counts {
+table.preview, table.counts, table.violation {
   border-collapse: collapse;
   width: 100%;
   font-size: 13px;
 }
+table.violation td:nth-child(3) {
+  /* Issue text is prose — left-align so it reads like a log entry. */
+  text-align: left;
+  white-space: normal;
+  min-width: 18em;
+}
+table.violation td.muted { color: var(--muted); text-align: center; }
 th {
   background: var(--gray-fill);
   border: 1px solid var(--border);
