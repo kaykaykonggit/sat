@@ -1221,12 +1221,6 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
   // colleague. Must run AFTER reduceFatigue (which would otherwise "fix" the
   // relaxation) and BEFORE rule10Pass (which re-balances from this schedule).
   neighborRelax(rows, names, unavailable, mPlusDAccepted);
-  // Unwind any residual "3+ duties in two days" tandems by relocating a single
-  // adjacent Deployment/Morning off the overloaded colleague. Gated by validateAll
-  // + per-scope spread, so it removes the inhumane stacking WITHOUT sacrificing
-  // fairness (unlike a penalized objective). Count-changing, so it must run before
-  // the finalCounts recompute below.
-  relieveTandems(rows, names, unavailable, mPlusDAccepted);
   // relocate moves in the fatigue pass change individual counts, so recompute the
   // per-person shift totals from the final rows before reporting them.
   const finalCounts = newCounts(names);
@@ -1475,86 +1469,6 @@ function neighborRelax(rows, names, unavailable, mPlusDAccepted) {
   }
 }
 
-// Tandem-relief pass: unwind any "one person pulls >=3 duties across two
-// consecutive calendar days" (the inhumane m+m / d+m stacking the user rejects)
-// by relocating a SINGLE adjacent Deployment/Morning off the overloaded person to
-// another available colleague. Unlike a crude cost-weight, every move is gated by
-// validateAll (hard rules, incl. the 3-day-deployment ceiling) AND a per-scope
-// spread cap, so removing a tandem never sacrifices fairness (the regression that
-// a penalized objective caused on hard-coverage months). Prefers handing the
-// relieved cell to an mPlusDAccepted volunteer (e.g. Andy) when possible. Runs
-// AFTER neighborRelax so the forced-double relaxation happens first, and BEFORE
-// rule10Pass which re-balances from the relaxed schedule.
-// ---------------------------------------------------------------------------
-function relieveTandems(rows, names, unavailable, mPlusDAccepted) {
-  mPlusDAccepted = mPlusDAccepted || new Set();
-  const byDate = {};
-  for (const r of rows) byDate[r.date] = r;
-  const MAX_SPREAD = 2;
-  const isManual = (r, col) =>
-    col === "deployment" ? r.deploymentManual : col === "morning" ? r.morningManual : r.weekendManual;
-  const fixed = (r, col) =>
-    isManual(r, col) ||
-    (col === "deployment" && (r.deploymentSudoku)) ||
-    (col === "morning" && (r.morningForced || r.deploymentSudoku)) ||
-    (col === "weekend" && (r.weekendSudoku || r.weekendForced));
-  const scopeSpread = (field) => {
-    const t = {};
-    for (const n of names) t[n] = 0;
-    for (const r of rows) { const v = r[field]; if (v) t[v]++; }
-    const nums = names.map((n) => t[n]);
-    return Math.max(...nums) - Math.min(...nums);
-  };
-  const roleCount = (day) => {
-    const m = {};
-    const rr = byDate[day];
-    if (rr) {
-      for (const who of [rr.morning, rr.deployment, rr.weekend]) if (who) m[who] = (m[who] || 0) + 1;
-    }
-    return m;
-  };
-  // Repeatedly scan the whole range; each iteration that finds an overload
-  // relocates ONE adjacent Deployment/Morning off the overloaded colleague and
-  // then KEEPS scanning (does not break out of the row loop), so EVERY tandem
-  // in range is relieved — not just the first few. The outer fixed-point loop is
-  // a safety net for the rare case where relocating one tandem enables another;
-  // the per-pass `moved` flag tells us when no progress remains.
-  for (let pass = 0; pass < 20; pass++) {
-    let moved = false;
-    for (const r of rows) {
-      const today = roleCount(r.date);
-      const prev = roleCount(dayPlus(r.date, -1));
-      const overloaded = names.filter((n) => (today[n] || 0) + (prev[n] || 0) >= 3);
-      if (!overloaded.length) continue;
-      const P = overloaded[0];
-      // Try relocating P's cell on THIS day (or the previous day) to another
-      // available colleague, guarded by validateAll + spread. Prefer giving the
-      // relieved cell to an mPlusDAccepted volunteer when one exists.
-      const targets = names.slice().sort((a, b) =>
-        mPlusDAccepted.has(a) === mPlusDAccepted.has(b) ? 0 : mPlusDAccepted.has(a) ? -1 : 1);
-      let relocated = false;
-      for (const [day, col] of [["today","deployment"],["today","morning"],["prev","deployment"],["prev","morning"]]) {
-        const rr = day === "today" ? r : byDate[dayPlus(r.date, -1)];
-        if (!rr || rr[col] !== P || fixed(rr, col)) continue;
-        for (const q of targets) {
-          if (q === P || (unavailable[q] && unavailable[q][rr.date])) continue;
-          const saved = rr[col];
-          rr[col] = q;
-          const valid = validateAll(rows, names, unavailable);
-          const okSpread = scopeSpread(col) <= MAX_SPREAD;
-          rr[col] = saved;
-          if (valid && okSpread) { rr[col] = q; relocated = true; break; }
-        }
-        if (relocated) break;
-      }
-      if (relocated) moved = true;
-      // Continue to the next row — do NOT break the row loop, so later tandems
-      // (including ones this relocation may have unmasked) are relieved too.
-    }
-    if (!moved) break;
-  }
-}
-
 // Count-preserving local-search pass: relocate WHICH day a person works a given
 // shift column between two non-manual days (a 2-way swap), keeping every person's
 // per-shift total identical (so final evenness is provably untouched), while
@@ -1615,7 +1529,7 @@ function reduceFatigue(rows, names, unavailable, manualShifts, holidays, mPlusDA
   // The pass trades a little spread to remove red flags, but never lets any
   // scope drift past "接近平均".
   const MAX_SPREAD = 2;
-  const RED_W = 8, CONS_M_W = 16, SPREAD_W = 1;
+  const RED_W = 8, CONS_M_W = 16, SPREAD_W = 1, TANDEM_W2 = 6;
   const SCOPE_KEYS = ["morning", "deployment", "thursday", "wsat", "wsun", "hcount"];
   const cost = () => {
     const c = countsOf();
@@ -1625,8 +1539,9 @@ function reduceFatigue(rows, names, unavailable, manualShifts, holidays, mPlusDA
       if (s > MAX_SPREAD) hard += 1e6;
       totalSpread += s;
     }
-    let red = 0, cm = 0;
+    let red = 0, cm = 0, tan = 0;
     const mp = morningByDay();
+    const rp = roleByDay();
     for (const r of rows) {
       // A same-day M+D double held by a colleague who EXPLICITLY accepts it
       // (mPlusDAccepted, e.g. Andy) costs 0 red — to them it is the relief valve,
@@ -1637,8 +1552,19 @@ function reduceFatigue(rows, names, unavailable, manualShifts, holidays, mPlusDA
       // Two consecutive workday Mornings by the same person = the least-accepted
       // pattern; HIGH weight so the pass avoids it hardest.
       if (r.morning && mp[dayPlus(r.date, -1)] === r.morning) cm++;
+      // Tandem overload: any one person pulling >=3 duties across this day and
+      // the previous calendar day. The user rejects such inhumane stacking
+      // (m+m / d+m style), so the balancing pass must actively unwind it, not
+      // just the greedy. Cheap to compute from the pre-built per-day role sets.
+      const prevRoles = rp[dayPlus(r.date, -1)] || {};
+      if (r) {
+        const mine = rp[r.date] || {};
+        for (const n of names) {
+          if ((mine[n] || 0) + (prevRoles[n] || 0) >= 3) { tan++; break; }
+        }
+      }
     }
-    return hard + totalSpread * SPREAD_W + red * RED_W + cm * CONS_M_W;
+    return hard + totalSpread * SPREAD_W + red * RED_W + cm * CONS_M_W + tan * TANDEM_W2;
   };
 
   // A JOINT local-search loop. Each iteration scans TWO kinds of moves and
@@ -1714,13 +1640,6 @@ function rule10Pass(rows, names, unavailable, holidays, counts) {
   holidays = holidays || new Set();
   if (names.length < 2) return;
   const MAX_SPREAD = 2;
-  // Cross-axis total balancing across the scopes that feed `total` (fixed-spec:
-  // total = morning + deployment + wsat + wsun + hcount). Non-Thursday
-  // `deployment` is deliberately absent: it is a 檔2 scope whose evenness the
-  // greedy already enforces, and adding it here lets total-balancing crowd out
-  // the 檔1 weekend transfers (rule10Pass applies one best move per iteration),
-  // regressing wsat/wsun/hcount evenness. Thursday is transferable via its own
-  // `thursday` scope (field `deployment`, Thu-only).
   const scopes = ["morning", "thursday", "wsat", "wsun", "hcount"];
   // The row field that carries each scope, and its single leaf-count key.
   const fieldOf = (sc) =>

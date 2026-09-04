@@ -32,7 +32,23 @@ as plain static files.
     live (per-scope even distribution on m/d/t/wsat/wsun/h, rest rules,
     weekend successiveness across adjacent weekend-shift days (relaxed to allow
     a wsat+wsun pair; see `successivenessAllowed`), availability,
-    manual-shift handling, Rule-10 total-shift balancing).
+    manual-shift handling, the 3-consecutive-Deployment ceiling (a 2-day run is
+    tolerated; a 3rd calendar-day run is a HARD red — see `computeFlags` /
+    `validateAll`), the same-day Morning+Deployment relief that routes an
+    unavoidable double onto a willing `mPlusDAccepted` volunteer (default
+    Andy), the coverage-first "Sudoku" pre-scans, and Rule-10 total-shift
+    balancing). The greedy's fair-pair search weights 3-day streaks above
+    evenness (`DEPCONSEC3_W`), so deployment is spread out first.
+  - **Post-passes** (pure row relocations, all gated by `validateAll` so hard
+    rules never break): `reduceFatigue` (count-preserving local swaps that
+    strip tiring orderings), `neighborRelax` (relieve the days adjacent to a
+    forced same-day M+D row), `relieveTandems` (unwind ANY ">=3 duties in two
+    consecutive days" tandem by relocating one adjacent cell; scans every row
+    per pass so every occurrence is handled — not just the first few), and
+    `rule10Pass` (cross-axis total-spread equalization within MAX_SPREAD).
+  - **Flagging**: `validateAll` (full-range hard-rule check used to gate every
+    swap) and `computeFlags` (writes the human-readable "must bear it" message
+    into `row.forced` for the renderer).
   - **Export**: `exportToXLS(rows, counts, names, unavailable)` -> HTML string;
     `downloadXLS(...)` wraps it in a Blob and triggers the download.
   - **UI/wiring**: `renderPreview`, `renderCounts`, `renderRecordsList`,
@@ -61,18 +77,21 @@ in Node for headless validation.
   derived totals:
   `{ morning, deployment, thursday, wsat, wsun, hcount, weekend, total }`.
   `weekend = wsat + wsun + hcount` and
-  `total = morning + deployment + thursday + wsat + wsun + hcount` (a Thursday
-  deployment counts in BOTH `deployment` and `thursday`) are always kept
-  consistent with the leaves (see `addCount`/`syncDerivedCounts`).
+  `total = morning + deployment + wsat + wsun + hcount` (a Thursday deployment
+  counts ONLY in the independent `thursday` scope — via `addDeployCount` — and
+  is NOT reflected in `deployment` nor `total`) are always kept consistent with
+  the leaves (see `addCount`/`syncDerivedCounts`).
   - `morning` = morning health check.
-  - `deployment` = any deployment day (incl. Thursdays).
+  - `deployment` = non-Thursday deployment days.
   - `thursday` = deployments falling on Thursday only (its own fair scope `t`).
   - `wsat`/`wsun` = Weekend Support on Saturday/Sunday respectively.
   - `hcount` = Weekend Support on a holiday that falls on a weekday (Mon–Fri).
-  Fairness balances EACH scope independently (its own 1_000_000-weighted evenness),
-  so "4 Saturdays / N staff" is split evenly without being diluted by Sundays.
-  `weekendScope(iso, holidays)` → `'wsat' | 'wsun' | 'hcount'` classifies a
-  weekend-shift day; only call it on days where `needsWeekendShift` is true.
+  Fairness balances EACH scope independently (檔1 = wsat/wsun/t/hcount at
+  1_000_000, 檔2 = m/d at 30_000; 檔1 dominance means Thursday stays even before
+  a Morning pairing is consulted), so "4 Saturdays / N staff" is split evenly
+  without being diluted by Sundays. `weekendScope(iso, holidays)` →
+  `'wsat' | 'wsun' | 'hcount'` classifies a weekend-shift day; only call it on
+  days where `needsWeekendShift` is true.
 - Dates are **ISO strings** (`"YYYY-MM-DD"`) everywhere in the engine, NOT JS
   `Date`, to avoid timezone bugs. Helpers: `dayPlus`, `isoWeekday`,
   `isWeekendISO`, `dateLabel`. `dateLabel` yields `星期四 2026 07 23`; keep the
@@ -95,6 +114,23 @@ in Node for headless validation.
   day; auto-Deployment runs on weekdays only. The auto Weekend-morning pool
   excludes the day's deployment person so the same colleague is not
   double-booked into both shifts that day.
+- **3-consecutive-Deployment ceiling**: 2 consecutive calendar-day Deployments
+  by the same person is the tolerated upper bound; a THIRD is a HARD red
+  (`computeFlags` and `validateAll`, both exempting a `deploymentSudoku`-forced
+  day because coverage wins). The greedy's `DEPCONSEC3_W` (just above the 檔2
+  tier weight) makes it spread deployment first, so the red only surfaces as a
+  genuine last-resort when spreading is physically impossible. `relieveTandems`
+  further unwinds any residual ">=3 duties in two days" tandem (e.g. a same-day
+  M+D followed by a Deployment) by relocating one adjacent cell, gated by
+  `validateAll` + per-scope spread.
+- **Same-day Morning+Deployment relief**: when coverage is tight enough that the
+  greedy must book one person into BOTH shifts on a day, it prefers routing that
+  double onto a colleague listed in the "Same-day Morning + Deployment" box
+  (`mPlusDAccepted`, default `Andy`) — the volunteer's `SAME_W` penalty is
+  dropped and a ladder override hands them the double. This is a red/fatigue
+  relief valve, NOT a total-spread optimizer: it concentrates heavy m+d days on
+  the willing volunteer to cut red flags, without regressing 檔2 (m/d) per-scope
+  spreads or violating availability.
 - Manual-shift records and holidays are deduped by
   `{type}|{name}|{start}|{end}` when submitted; first manual lock wins per date.
 - Rest-rule bookkeeping must rebuild the block-set **each day** (a person from

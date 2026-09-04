@@ -63,6 +63,26 @@
         <p id="rec-unified-error" class="error"></p>
       </fieldset>
 
+      <fieldset class="bulk-rec">
+        <legend>Bulk Import</legend>
+        <label for="bulk-line">Paste several records at once (one per line)</label>
+        <textarea id="bulk-line" rows="6" placeholder="Andy: sep7-20&#10;Jessica: sep2,sep12,sep16,sep19-24,sep27&#10;Tina: sep2,sep5,sep11,sep18-19,sep25-26"></textarea>
+        <select id="bulk-kind">
+          <option value="unavailable" selected>Unavailable</option>
+          <option value="holiday">Holiday</option>
+          <option value="deploy">Deployment</option>
+          <option value="morning">Morning Health Check</option>
+          <option value="weekend">Weekend Support</option>
+        </select>
+        <button type="button" id="add-bulk" class="primary">＋ Import</button>
+        <p id="bulk-error" class="error"></p>
+        <p class="hint">Each <strong>non-empty line</strong> is one record in the
+        same <code>Name: sep1,5,20-23</code> format as Add Record. This is the
+        fastest way to load a whole month of unavailability (e.g. from a fixed
+        schedule CSV&#39;s &quot;Not available&quot; column). Rows already present are deduped;
+        the rest are appended.</p>
+      </fieldset>
+
       <fieldset>
         <legend>Saved Records</legend>
         <div id="records-list"><p class="muted">No records yet.</p></div>

@@ -518,15 +518,14 @@ function newCounts(names) {
 }
 
 // Increment one leaf scope; refresh the derived weekend/total.
-// `total` = morning + deployment + wsat + wsun + h (the fixed-spec formula:
-// a Thursday deployment counts ONLY in `thursday`, never in `deployment` or
-// `total`). `weekend` = wsat + wsun + h.
+// `total` = morning + deployment + thursday + wsat + wsun + h (the user's
+// formula: a Thursday deployment counts in BOTH `deployment` and `thursday`).
 function addCount(counts, name, key, delta) {
   counts[name][key] = (counts[name][key] || 0) + delta;
   const c = counts[name];
   c.weekend = (c.wsat || 0) + (c.wsun || 0) + (c.hcount || 0);
   c.total =
-    (c.morning || 0) + (c.deployment || 0) +
+    (c.morning || 0) + (c.deployment || 0) + (c.thursday || 0) +
     (c.wsat || 0) + (c.wsun || 0) + (c.hcount || 0);
   return counts;
 }
@@ -537,18 +536,10 @@ function syncDerivedCounts(counts, names) {
     const c = counts[n];
     c.weekend = (c.wsat || 0) + (c.wsun || 0) + (c.hcount || 0);
     c.total =
-      (c.morning || 0) + (c.deployment || 0) +
+      (c.morning || 0) + (c.deployment || 0) + (c.thursday || 0) +
       (c.wsat || 0) + (c.wsun || 0) + (c.hcount || 0);
   }
   return counts;
-}
-
-// Add a Deployment assignment to a colleague's counts. A Thursday deployment is
-// counted ONLY in the independent `thursday` scope (its own fairness tier, per
-// the fixed spec) — it is NOT reflected in `deployment` nor in `total`. Any
-// other day's deployment counts toward `deployment`. `date` is an ISO string.
-function addDeployCount(counts, who, date, delta) {
-  return addCount(counts, who, isoWeekday(date) === 3 ? "thursday" : "deployment", delta);
 }
 
 // Spread (max-min) of a given scope across all colleagues.
@@ -768,7 +759,8 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
         deploymentSudoku = true;
         morning = sd;
         morningForced = true;
-        addDeployCount(counts, deployment, day, 1);
+        addCount(counts, deployment, "deployment", 1);
+        if (isoWeekday(day) === 3) addCount(counts, deployment, "thursday", 1);
         addCount(counts, morning, "morning", 1);
       } else {
         const dCands = deplLocked ? [manualDeployForDay] : names.filter((n) => availableFor(n));
@@ -804,42 +796,26 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
       const TANDEM_W = 3000;  // a single person would reach >=3 shifts in 2 days
       const CONSEC_W = 1500;  // general: a person in this pair worked yesterday
       const SAME_W = 1000;    // D===M same-day overlap: mildly disliked
-      // 3-day consecutive DEPLOYMENT is a HARD red (user's "2-day ceiling, 3-day
-      // unacceptable" rule; see computeFlags). It must be STRICTLY avoided BEFORE
-      // evenness is consulted — the user wants m/d spread out first, and Andy's
-      // m+d used only when spreading is impossible. A dominant weight guarantees
-      // the greedy never voluntarily puts anyone on a 3rd consecutive deployment
-      // day while a non-streak candidate exists. Only when EVERY candidate would
-      // hit the streak does the coverage-sudoku / forced-relaxation path take over.
-      const DEPCONSEC3_W = 40000; // just above TIER2_W(30000): prefers spreading deployment again a 3rd consecutive day, but lets reduceFatigue resolve residuals
 
       let bestD = "", bestM = "", bestTotal = Infinity;
       const yesterdayDay = dayPlus(day, -1);
       const yesterdayWorked = workedByDay[yesterdayDay] || new Set();
       const yesterdayRoles = roleCountByDay[yesterdayDay] || {};
-      // Tier weights (fixed-spec 公平目標 §28): 檔1 = wsat/wsun/t/h balance strictly
-      // dominates 檔2 = m/d balance. TIER1_W > TIER2_W, and the gap is wide enough
-      // that no realistic tier-2 count spread (≈22 < 34) can out-rank a single
-      // tier-1 point, so Thursday `t` stays even FIRST even when a Morning pairing
-      // would otherwise pull a (D,M) pair toward the less-even t option. Both stay
-      // far above the max fatigue weight (~8000) so evenness still out-ranks fatigue.
-      const TIER1_W = 1000000; // wsat / wsun / t / hcount
-      const TIER2_W = 30000;   // m / d (d excludes Thursday); ~13x the max fatigue sum
       for (const D of dCands) {
         for (const M of mCands) {
           // Per-shift evenness: independent axes, least-count. Deployment balance only
           // considers Deployment counts; Morning balance only Morning counts. The
           // person with the fewest shifts of that type is preferred, which keeps
           // each shift even and naturally respects unequal availability (someone
-          // who was out just stays low while present differently). The tier weight
-          // makes evenness strictly dominate fatigue, so the count target is
+          // who was out just stays low while present differently). The 1_000_000
+          // multiplier makes evenness strictly dominate, so the count target is
           // always met before fatigue is ever consulted.
           //
-          // Thursday deployment (t) is its own 檔1 scope. On a Thursday the D axis
+          // Thursday deployment (t) is its own scope. On a Thursday the D axis
           // weights the thursday count; when the number of Thursdays EXCEEDS the
           // number of staff (surplus case), once everyone is at the shared base
           // (thuTarget) the surplus falls through to the LOWEST deployment-count
-          // colleague, relaxing strict t-spread.
+          // colleague (Rule 5), relaxing strict t-spread.
           const isThu = isoWeekday(day) === 3;
           let depEven;
           if (isThu) {
@@ -853,13 +829,10 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
             depEven = counts[D].deployment + 1;
           }
           const morNext = counts[M].morning + 1;
-          const depAxisW = isThu ? TIER1_W : TIER2_W;
-          const evenness = depEven * depAxisW + morNext * TIER2_W;
+          const evenness = depEven * 1000000 + morNext * 1000000;
 
           // D doing Deployment yesterday (consecutive deployment).
           const depConsec = deploymentByDay[yesterdayDay] === D ? 1 : 0;
-          // Would D reach a 3-day streak (deployed yesterday AND the day before)?
-          const depConsec3 = deploymentByDay[yesterdayDay] === D && deploymentByDay[dayPlus(day, -2)] === D ? 1 : 0;
 
           // Would any single person reach >=3 shifts across today+yesterday?
           const tandemD = (yesterdayRoles[D] || 0) + (D === M ? 2 : 1);
@@ -873,7 +846,6 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
           const same = (D === M && !mPlusDAccepted.has(D)) ? 1 : 0;
           const total =
             evenness +
-            DEPCONSEC3_W * depConsec3 +
             DEPCONS_W * depConsec +
             TANDEM_W * tandem +
             CONSEC_W * consec +
@@ -883,35 +855,13 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
           }
         }
       }
-      // ---- Ladder level 2: Andy takes up a same-day m+d (fixed-spec §35.2) ----
-      // When the day's chosen pair IS an unavoidable m+d double, prefer routing the
-      // double onto the designated volunteer (mPlusDAccepted, default Andy) FIRST,
-      // before spreading it to other colleagues. This is a ladder-priority override,
-      // not a tie-break: it applies whenever switching the holder to Andy keeps the
-      // 檔2 (deployment / morning) scope spreads within MAX_SPREAD=2 AND Andy has
-      // not already absorbed more doubles than the next tier's fair share. The
-      // volunteer's SAME_W=0 (vs non-volunteer SAME_W=1000) already biases tie-breaks
-      // toward them; this gate makes the preference hold even when Andy's raw count
-      // is marginally less even, as the spec demands.
-      if (bestM !== "" && bestD === bestM) {
-        const andy = names.find((n) => mPlusDAccepted.has(n));
-        if (andy && andy !== bestD && availableFor(andy) && !deplLocked && !mornLocked) {
-          const swapTo = bestD; // current double-holder (a non-volunteer)
-          const dSpreadAfter = Math.max(...names.map((n) => counts[n].deployment + (n === andy ? 1 : n === swapTo ? -1 : 0))) -
-                               Math.min(...names.map((n) => counts[n].deployment + (n === andy ? 1 : n === swapTo ? -1 : 0)));
-          const mSpreadAfter = Math.max(...names.map((n) => counts[n].morning + (n === andy ? 1 : n === swapTo ? -1 : 0))) -
-                               Math.min(...names.map((n) => counts[n].morning + (n === andy ? 1 : n === swapTo ? -1 : 0)));
-          if (dSpreadAfter <= 2 && mSpreadAfter <= 2) {
-            bestD = andy; bestM = andy; // route the double onto the volunteer
-          }
-        }
-      }
       if (bestM !== "") {
         deployment = bestD;
         deploymentManual = deplLocked && bestD === manualDeployForDay;
         morning = bestM;
         morningManual = mornLocked && bestM === manualMorningForDay;
-        addDeployCount(counts, deployment, day, 1);
+        addCount(counts, deployment, "deployment", 1);
+        if (isoWeekday(day) === 3) addCount(counts, deployment, "thursday", 1);
         addCount(counts, morning, "morning", 1);
       }
       }
@@ -920,7 +870,8 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
       // Morning/Deployment those days unless locked).
       deployment = manualDeployForDay;
       deploymentManual = true;
-      addDeployCount(counts, deployment, day, 1);
+      addCount(counts, deployment, "deployment", 1);
+      if (isoWeekday(day) === 3) addCount(counts, deployment, "thursday", 1);
     }
 
     // ---- Weekend Support (Sat/Sun/public holidays) ---------------------------
@@ -1221,18 +1172,15 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
   // colleague. Must run AFTER reduceFatigue (which would otherwise "fix" the
   // relaxation) and BEFORE rule10Pass (which re-balances from this schedule).
   neighborRelax(rows, names, unavailable, mPlusDAccepted);
-  // Unwind any residual "3+ duties in two days" tandems by relocating a single
-  // adjacent Deployment/Morning off the overloaded colleague. Gated by validateAll
-  // + per-scope spread, so it removes the inhumane stacking WITHOUT sacrificing
-  // fairness (unlike a penalized objective). Count-changing, so it must run before
-  // the finalCounts recompute below.
-  relieveTandems(rows, names, unavailable, mPlusDAccepted);
   // relocate moves in the fatigue pass change individual counts, so recompute the
   // per-person shift totals from the final rows before reporting them.
   const finalCounts = newCounts(names);
   for (const r of rows) {
     if (r.morning) addCount(finalCounts, r.morning, "morning", 1);
-    if (r.deployment) addDeployCount(finalCounts, r.deployment, r.date, 1);
+    if (r.deployment) {
+      addCount(finalCounts, r.deployment, "deployment", 1);
+      if (isoWeekday(r.date) === 3) addCount(finalCounts, r.deployment, "thursday", 1);
+    }
     if (r.weekend) addCount(finalCounts, r.weekend, weekendScope(r.date, holidays), 1);
   }
   syncDerivedCounts(finalCounts, names);
@@ -1290,29 +1238,12 @@ function computeFlags(rows, names, mPlusDAccepted) {
       forced.push(`${r.morning} does Morning Health Check on consecutive days (${dateLabel(prevRow.date)} & ${r.label}).`);
       total += 4;
     }
-    // 2b. Consecutive 3-day DEPLOYMENT — the user's ceiling rule: 2 consecutive
-    //     deployment days is the tolerated upper bound, but a THIRD consecutive
-    //     calendar-day Deployment by the same person is a HARD red. A weekend or
-    //     holiday between breaks adjacency (those days carry no auto-deployment,
-    //     so prevRow.deployment is empty and cannot match). The greedy is taught
-    //     to spread deployment first (see DEPCONSEC3_W) so this only surfaces as a
-    //     genuine last-resort when spreading is physically impossible.
-    if (r.deployment && prevRow && prevRow.deployment === r.deployment) {
-      const twoBack = byDate[dayPlus(r.date, -2)];
-      if (twoBack && twoBack.deployment === r.deployment) {
-        forced.push(`${r.deployment} does Deployment on 3 consecutive days (${dateLabel(twoBack.date)} .. ${r.label}).`);
-        total += 4;
-      }
-    }
-    // 4. Rest-rule / Rule-1 overburden — d→m (Morning the day after a Deployment)
-    //    is a HARD red (fixed-spec §30): flagged red EVEN when forced (sole-available).
-    //    w→m (Morning the day after Weekend Support) is a DIFFERENT, tolerated
-    //    last-resort compromise (fixed-spec §35 level 5) — NOT red; we just record
-    //    it on row.hasWtoM so the renderer can style it amber/informational.
-    if (r.morning && prevRow && prevRow.deployment === r.morning)
-      forced.push(`${r.morning} must do Morning the day after Deployment (${dateLabel(prevRow.date)}).`);
-    if (r.morning && prevRow && prevRow.weekend === r.morning)
-      r.hasWtoM = true; // tolerated w→m compromise, not a red violation
+    // 4. Rest-rule / Rule-1 overburden — flagged red EVEN when forced. When the
+    //    culprit is the sole-available colleague these are genuinely unavoidable,
+    //    but the staff must still SEE and bear the extra fatigue, so they are red
+    //    regardless of morningForced/weekendForced (i.e. no forced exemption here).
+    if (r.morning && prevRow && (prevRow.deployment === r.morning || prevRow.weekend === r.morning))
+      forced.push(`${r.morning} must do Morning the day after ${prevRow.deployment === r.morning ? "Deployment" : "Weekend Support"} (${dateLabel(prevRow.date)}).`);
     if (r.weekend && prevRow && prevRow.deployment === r.weekend)
       forced.push(`${r.weekend} does Weekend Support the day after Deployment (${dateLabel(prevRow.date)}).`);
     // 3. >=3 duties by one person across two consecutive days (tandem overload).
@@ -1376,14 +1307,6 @@ function validateAll(rows, names, unavailable) {
     // A FORCED weekend (only one colleague available) is exempt — the Sudoku rule
     // says the sole available person MUST cover it even after deploying yesterday.
     if (r.weekend && py.deployment === r.weekend && !r.weekendForced) return false;
-    // User's deployment-ceiling rule: 2 consecutive Deployment days is the upper
-    // bound; a THIRD consecutive calendar-day Deployment by the same person is a
-    // hard violation. A sudoku-forced day (only one person available) is exempt —
-    // coverage wins, exactly like the other forced relaxations. Runs in validateAll
-    // so EVERY post-pass (reduceFatigue / neighborRelax / rule10Pass) rejects any
-    // swap that would manufacture a 3-day deployment streak.
-    const pb = byDay[dayPlus(r.date, -2)];
-    if (r.deployment && !r.deploymentSudoku && py.deployment === r.deployment && pb && pb.deployment === r.deployment) return false;
   }
   // Successiveness ("h, wsat, wsun cannot be successive person"): the weekend-
   // support person on a weekend-shift day must differ from the support person on
@@ -1475,86 +1398,6 @@ function neighborRelax(rows, names, unavailable, mPlusDAccepted) {
   }
 }
 
-// Tandem-relief pass: unwind any "one person pulls >=3 duties across two
-// consecutive calendar days" (the inhumane m+m / d+m stacking the user rejects)
-// by relocating a SINGLE adjacent Deployment/Morning off the overloaded person to
-// another available colleague. Unlike a crude cost-weight, every move is gated by
-// validateAll (hard rules, incl. the 3-day-deployment ceiling) AND a per-scope
-// spread cap, so removing a tandem never sacrifices fairness (the regression that
-// a penalized objective caused on hard-coverage months). Prefers handing the
-// relieved cell to an mPlusDAccepted volunteer (e.g. Andy) when possible. Runs
-// AFTER neighborRelax so the forced-double relaxation happens first, and BEFORE
-// rule10Pass which re-balances from the relaxed schedule.
-// ---------------------------------------------------------------------------
-function relieveTandems(rows, names, unavailable, mPlusDAccepted) {
-  mPlusDAccepted = mPlusDAccepted || new Set();
-  const byDate = {};
-  for (const r of rows) byDate[r.date] = r;
-  const MAX_SPREAD = 2;
-  const isManual = (r, col) =>
-    col === "deployment" ? r.deploymentManual : col === "morning" ? r.morningManual : r.weekendManual;
-  const fixed = (r, col) =>
-    isManual(r, col) ||
-    (col === "deployment" && (r.deploymentSudoku)) ||
-    (col === "morning" && (r.morningForced || r.deploymentSudoku)) ||
-    (col === "weekend" && (r.weekendSudoku || r.weekendForced));
-  const scopeSpread = (field) => {
-    const t = {};
-    for (const n of names) t[n] = 0;
-    for (const r of rows) { const v = r[field]; if (v) t[v]++; }
-    const nums = names.map((n) => t[n]);
-    return Math.max(...nums) - Math.min(...nums);
-  };
-  const roleCount = (day) => {
-    const m = {};
-    const rr = byDate[day];
-    if (rr) {
-      for (const who of [rr.morning, rr.deployment, rr.weekend]) if (who) m[who] = (m[who] || 0) + 1;
-    }
-    return m;
-  };
-  // Repeatedly scan the whole range; each iteration that finds an overload
-  // relocates ONE adjacent Deployment/Morning off the overloaded colleague and
-  // then KEEPS scanning (does not break out of the row loop), so EVERY tandem
-  // in range is relieved — not just the first few. The outer fixed-point loop is
-  // a safety net for the rare case where relocating one tandem enables another;
-  // the per-pass `moved` flag tells us when no progress remains.
-  for (let pass = 0; pass < 20; pass++) {
-    let moved = false;
-    for (const r of rows) {
-      const today = roleCount(r.date);
-      const prev = roleCount(dayPlus(r.date, -1));
-      const overloaded = names.filter((n) => (today[n] || 0) + (prev[n] || 0) >= 3);
-      if (!overloaded.length) continue;
-      const P = overloaded[0];
-      // Try relocating P's cell on THIS day (or the previous day) to another
-      // available colleague, guarded by validateAll + spread. Prefer giving the
-      // relieved cell to an mPlusDAccepted volunteer when one exists.
-      const targets = names.slice().sort((a, b) =>
-        mPlusDAccepted.has(a) === mPlusDAccepted.has(b) ? 0 : mPlusDAccepted.has(a) ? -1 : 1);
-      let relocated = false;
-      for (const [day, col] of [["today","deployment"],["today","morning"],["prev","deployment"],["prev","morning"]]) {
-        const rr = day === "today" ? r : byDate[dayPlus(r.date, -1)];
-        if (!rr || rr[col] !== P || fixed(rr, col)) continue;
-        for (const q of targets) {
-          if (q === P || (unavailable[q] && unavailable[q][rr.date])) continue;
-          const saved = rr[col];
-          rr[col] = q;
-          const valid = validateAll(rows, names, unavailable);
-          const okSpread = scopeSpread(col) <= MAX_SPREAD;
-          rr[col] = saved;
-          if (valid && okSpread) { rr[col] = q; relocated = true; break; }
-        }
-        if (relocated) break;
-      }
-      if (relocated) moved = true;
-      // Continue to the next row — do NOT break the row loop, so later tandems
-      // (including ones this relocation may have unmasked) are relieved too.
-    }
-    if (!moved) break;
-  }
-}
-
 // Count-preserving local-search pass: relocate WHICH day a person works a given
 // shift column between two non-manual days (a 2-way swap), keeping every person's
 // per-shift total identical (so final evenness is provably untouched), while
@@ -1583,7 +1426,10 @@ function reduceFatigue(rows, names, unavailable, manualShifts, holidays, mPlusDA
     const c = newCounts(names);
     for (const r of rows) {
       if (r.morning) addCount(c, r.morning, "morning", 1);
-      if (r.deployment) addDeployCount(c, r.deployment, r.date, 1);
+      if (r.deployment) {
+        addCount(c, r.deployment, "deployment", 1);
+        if (isoWeekday(r.date) === 3) addCount(c, r.deployment, "thursday", 1);
+      }
       if (r.weekend) addCount(c, r.weekend, weekendScope(r.date, holidays), 1);
     }
     syncDerivedCounts(c, names);
@@ -1714,13 +1560,6 @@ function rule10Pass(rows, names, unavailable, holidays, counts) {
   holidays = holidays || new Set();
   if (names.length < 2) return;
   const MAX_SPREAD = 2;
-  // Cross-axis total balancing across the scopes that feed `total` (fixed-spec:
-  // total = morning + deployment + wsat + wsun + hcount). Non-Thursday
-  // `deployment` is deliberately absent: it is a 檔2 scope whose evenness the
-  // greedy already enforces, and adding it here lets total-balancing crowd out
-  // the 檔1 weekend transfers (rule10Pass applies one best move per iteration),
-  // regressing wsat/wsun/hcount evenness. Thursday is transferable via its own
-  // `thursday` scope (field `deployment`, Thu-only).
   const scopes = ["morning", "thursday", "wsat", "wsun", "hcount"];
   // The row field that carries each scope, and its single leaf-count key.
   const fieldOf = (sc) =>
@@ -1731,48 +1570,6 @@ function rule10Pass(rows, names, unavailable, holidays, counts) {
       : fieldOf(sc) === "deployment" ? (r.deploymentManual)
       : (r.weekendManual || r.weekendSudoku); // sudoku-prelocked weekend is immovable here too
   const totalSpread = () => countSpread(counts, names, "total");
-
-  // Red-aware guard: rule10Pass may equalize cross-axis `total` counts, but it
-  // must never REINTRODUCE a tiring pattern that the earlier passes already
-  // removed — otherwise "fairer totals" silently buys back the red flags the
-  // user wants gone. Mirror exactly what computeFlags flags on a pair of
-  // consecutive rows: consecutive-2-day Morning, d→m (Morning after Deployment),
-  // d→wsun (Weekend Support after Deployment), and the >=3-shifts-in-2-days
-  // tandem overload. A transfer that does not strictly increase this count is
-  // allowed (it may equal it); anything that would add a red is rejected no
-  // matter how much it helps `total` fairness.
-  const fatigueCount = () => {
-    const byIso = {};
-    for (const r of rows) byIso[r.date] = r;
-    let c = 0;
-    for (const r of rows) {
-      const py = byIso[dayPlus(r.date, -1)];
-      if (!py) continue;
-      if (r.morning && py.morning === r.morning) c++;          // consecutive morning
-      if (r.morning && py.deployment === r.morning) c++;       // d→m
-      if (r.weekend && py.deployment === r.weekend) c++;       // d→wsun
-      // w→m (Morning after Weekend Support) is a TOLERATED last-resort in
-      // computeFlags (informational, not a forced red flag), but it is still a
-      // fatigue pattern rule10Pass must not newly introduce while balancing
-      // totals — so it participates in the "do not worsen fatigue" gate.
-      if (r.morning && py.weekend === r.morning) c++;          // w→m
-    }
-    // Tandem overload: >=3 duties in any 2 consecutive calendar days.
-    for (let i = 1; i < rows.length; i++) {
-      const a = rows[i - 1], b = rows[i];
-      if (dayPlus(a.date, 1) !== b.date) continue;
-      const roles = {};
-      for (const rr of [a, b]) {
-        for (const who of [rr.morning, rr.deployment, rr.weekend]) {
-          if (!who) continue;
-          roles[who] = (roles[who] || 0) + 1;
-        }
-      }
-      for (const who of Object.keys(roles)) if (roles[who] >= 3) c++;
-    }
-    return c;
-  };
-  const fatigueBefore = fatigueCount();
 
   // Weekend-shift adjacency (ordered) so successiveness is an O(1) local check.
   const weekendRows = [];
@@ -1847,7 +1644,7 @@ function rule10Pass(rows, names, unavailable, holidays, counts) {
           const newScopeSpread = sc === "thursday"
             ? countSpread(counts, names, "deployment")
             : countSpread(counts, names, leaf);
-          if (valid && newScopeSpread <= MAX_SPREAD && fatigueCount() <= fatigueBefore && gain > bestGain) {
+          if (valid && newScopeSpread <= MAX_SPREAD && gain > bestGain) {
             best = { r, f, from, to, sc, leaf };
             bestGain = gain;
           }
@@ -1943,14 +1740,11 @@ function annotateViolations(rows, names, unavailable, holidays, mPlusDAccepted) 
       broke(vW, "day-type: Weekend support on a working day (unless manually set)");
     }
 
-    // ---- Rest rule: Morning the day after a Deployment (d→m, §30) is a HARD
-    // red — flagged even when forced (sole-available). Morning after Weekend
-    // Support (w→m, §35 level 5) is a TOLERATED last-resort compromise: it is an
-    // informational note, not a red violation.
-    if (r.morning && prevDepl === r.morning)
-      broke(vM, `rest rule: ${r.morning} did Deployment yesterday (${dayPlus(r.date, -1)})`);
-    if (r.morning && prevWeek === r.morning)
-      broke(vM, `tolerated compromise (w→m): ${r.morning} did Weekend Support the previous day (${dayPlus(r.date, -1)}) — last-resort relief, not a violation`);
+    // ---- Rest rule: Morning the day after a Deployment or Weekend ----
+    // Flagged even when forced (sole-available) — the staff must still see and
+    // bear the extra fatigue, so there is no morningForced exemption here.
+    if (r.morning && (prevDepl === r.morning || prevWeek === r.morning))
+      broke(vM, `rest rule: ${r.morning} worked ${prevDepl === r.morning ? "Deployment" : "Weekend"} yesterday (${dayPlus(r.date, -1)})`);
 
     // ---- Consecutive 2-day Morning (the least-acceptable pattern) ----
     // The same person does Morning on back-to-back workdays. A weekend/holiday
@@ -2718,64 +2512,6 @@ function submitUnifiedRecord() {
   updateAll();
 }
 
-/* Bulk-import records (one per non-empty line, "Name: sep1,5,20-23" format).
-   The fastest way to load a whole month of availability / holidays / manual
-   locks at once (e.g. from a fixed schedule CSV's "Not available" column).
-   Each line is parsed like the single Add Record form and deduped against the
-   existing `records` (same {type}|{name}|{start}|{end} key); already-present
-   rows are skipped, the rest are appended. A line is skipped only when no valid
-   date in the range resolves; malformed/unknown-name lines are skipped with a
-   note. DOM-touching; reuses the DOM-free parse helpers. */
-function submitBulkRecords() {
-  const err = document.getElementById("bulk-error");
-  const lineEl = document.getElementById("bulk-line");
-  const kind = document.getElementById("bulk-kind").value;
-  const names = parseNames(document.getElementById("names").value);
-  let s = document.getElementById("startDate").value;
-  let e = document.getElementById("endDate").value;
-  if (!s || !e) { if (err) err.textContent = "Set a date range first."; return; }
-  if (s > e) { [s, e] = [e, s]; }
-
-  const rawLines = (lineEl.value || "")
-    .split(/[\r\n]+/).map((L) => L.trim()).filter(Boolean);
-  if (!rawLines.length) { if (err) err.textContent = "Paste at least one line first."; return; }
-
-  const type = { holiday: "holiday", unavailable: "unavailable", deploy: "deploy", morning: "morning", weekend: "weekend" }[kind];
-  const note = kind === "holiday" ? "Holiday" : (kind === "unavailable" ? "Unavailable" : "");
-  const nameSet = new Set(names);
-  let added = 0, rejected = 0;
-  const rejectedMsgs = [];
-
-  for (const raw of rawLines) {
-    const colonAt = raw.indexOf(":");
-    const name = colonAt >= 0 ? raw.slice(0, colonAt).trim() : "";
-    const expr = (colonAt >= 0 ? raw.slice(colonAt + 1) : raw).trim();
-    // Manual / unavailable kinds require a colleague name; only Holiday needs none.
-    if (kind !== "holiday") {
-      if (!name) { rejected++; rejectedMsgs.push(`\u201C${raw}\u201D (no colleague name)`); continue; }
-      if (nameSet.size && !nameSet.has(name)) { rejected++; rejectedMsgs.push(`\u201C${raw}\u201D (unknown colleague "${name}")`); continue; }
-    }
-    const dates = resolveDateExpr(expr, s, e);
-    if (!dates.length) { rejected++; rejectedMsgs.push(`\u201C${raw}\u201D (no valid dates)`); continue; }
-    for (const r of groupContiguous(dates)) {
-      const key = `${type}|${name}|${r.start}|${r.end}`;
-      if (!records.some((x) => `${x.type}|${x.name}|${x.start}|${x.end}` === key)) {
-        records.push({ type, name, start: r.start, end: r.end, note });
-        added++;
-      }
-    }
-  }
-
-  if (err) {
-    const parts = [`Imported ${added} record(s).`];
-    if (rejected) parts.push(`${rejected} line(s) skipped.`);
-    if (rejectedMsgs.length) parts.push("Details: " + rejectedMsgs.slice(0, 5).join("; "));
-    err.textContent = parts.join(" ");
-  }
-  if (added) lineEl.value = "";
-  updateAll();
-}
-
 function init() {
   // Default date range: today .. +30 days.
   document.getElementById("startDate").value = isoDay(0);
@@ -2788,16 +2524,6 @@ function init() {
   if (recLine) {
     recLine.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter") { ev.preventDefault(); submitUnifiedRecord(); }
-    });
-  }
-
-  // Bulk Import: one button parses every non-empty line into records.
-  const addBulk = document.getElementById("add-bulk");
-  if (addBulk) addBulk.addEventListener("click", submitBulkRecords);
-  const bulkLine = document.getElementById("bulk-line");
-  if (bulkLine) {
-    bulkLine.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); submitBulkRecords(); }
     });
   }
 

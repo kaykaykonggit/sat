@@ -21,9 +21,17 @@ Deploys as a static site to **Cloudflare Pages** (free) — no server, no backen
   - Weekend Support on Sat/Sun/public holidays (no Morning/Deployment those days).
   - **Per-scope fairness**: Morning, Deployment, Thursday-deployment, Saturday
     support, Sunday support, and Holiday support are each spread independently
-    so every colleague gets a similar share of each scope. Surplus Thursday
-    deployments fall through to the lowest-Deployment colleague; a cross-axis
-    pass reduces the *total* shift spread without breaking any scope's balance.
+    so every colleague gets a similar share of each scope (a Thursday deployment
+    counts only in its own Thursday scope, not in the Deployment/total counts).
+    Surplus Thursday deployments fall through to the lowest-Deployment
+    colleague; a cross-axis pass reduces the *total* shift spread without
+    breaking any scope's balance.
+  - **3-consecutive-Deployment ceiling**: 2 consecutive days of Deployment by the
+    same colleague is tolerated, but a **third** consecutive calendar-day
+    Deployment is flagged red as the least-acceptable overload (surfacing only as
+    a genuine last-resort when spreading is physically impossible). The engine
+    also unwinds any "3+ duties in two consecutive days" tandem by relocating an
+    adjacent shift.
   - **Successiveness**: weekend/holiday support may repeat on two adjacent
     weekend-shift days only when they fall in different scopes with neither being
     a weekday public holiday — i.e. a normal Sat+Sun stint (wsat+wsun) is fine.
@@ -38,7 +46,9 @@ Deploys as a static site to **Cloudflare Pages** (free) — no server, no backen
     required dropping a preference are flagged red for the staff to bear.
   - **Same-day Morning+Deployment relief**: colleagues listed in the
     "Same-day Morning + Deployment" box (default `Andy`) are allowed to pull
-    both shifts on one day, acting as a relief valve when coverage is tight.
+    both shifts on one day, acting as a relief valve when coverage is tight —
+    heavy m+d days are routed onto the willing volunteer to cut red flags,
+    without regressing fairness or availability.
   - **A saved manual Deployment is honored on any day** — even a weekend or
     holiday — so a colleague can be locked onto Deployment that day.
   - Rest rules: no Morning Health Check the day after a Deployment or a
