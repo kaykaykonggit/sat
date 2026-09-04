@@ -240,6 +240,22 @@ td {
 }
 td.date-cell { font-weight: 600; text-align: left; }
 tr.weekend-row td.date-cell { background: var(--peach-fill); }
+
+/* Shift Counts footer: per-column Total and Average */
+tr.counts-total td {
+  border-top: 2px solid var(--border);
+  font-weight: 700;
+  background: var(--gray-fill);
+}
+tr.counts-avg td {
+  color: var(--muted);
+}
+tr.counts-total td:first-child,
+tr.counts-avg td:first-child {
+  font-weight: 600;
+  text-align: left;
+  color: inherit;
+}
 td.avail-cell { background: var(--orange-fill); }
 
 /* Manual deployment override: bold text on the usual deployment cell fill. */

@@ -2136,6 +2136,8 @@ function renderPreview(rows, namesList, unavailable) {
 function renderCounts(namesList, counts) {
   const tbody = document.getElementById("counts-tbody");
   tbody.innerHTML = "";
+  const keys = ["morning", "deployment", "thursday", "wsat", "wsun", "hcount", "total"];
+  const sums = Object.fromEntries(keys.map((k) => [k, 0]));
   for (const n of namesList) {
     const c = counts[n] || { morning: 0, deployment: 0, thursday: 0, wsat: 0, wsun: 0, hcount: 0, total: 0 };
     const tr = document.createElement("tr");
@@ -2145,7 +2147,28 @@ function renderCounts(namesList, counts) {
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
+    for (const k of keys) sums[k] += (c[k] || 0);
   }
+  // Footer: per-column Total and Average (mean across colleagues).
+  const avg = (k) => (namesList.length ? sums[k] / namesList.length : 0);
+  const roundAvg = (v) => (Number.isInteger(v) ? v : +v.toFixed(2));
+  const tfoot = document.getElementById("counts-tfoot");
+  if (tfoot) tfoot.innerHTML = "";
+  const totalTr = document.createElement("tr");
+  totalTr.className = "counts-total";
+  [ "Total", ...keys.map((k) => sums[k]) ].forEach((v) => {
+    const td = document.createElement("td");
+    td.textContent = v;
+    totalTr.appendChild(td);
+  });
+  const avgTr = document.createElement("tr");
+  avgTr.className = "counts-avg";
+  [ "Average", ...keys.map((k) => roundAvg(avg(k))) ].forEach((v) => {
+    const td = document.createElement("td");
+    td.textContent = v;
+    avgTr.appendChild(td);
+  });
+  if (tfoot) { tfoot.appendChild(totalTr); tfoot.appendChild(avgTr); }
 }
 
 // Render a flat, copyable log of every violation / "must-bear" message that the
