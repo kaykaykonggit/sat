@@ -2726,6 +2726,12 @@ function makeFreshMonth(startISO, endISO, names, carryIn) {
   const id = `${startISO}__${Math.random().toString(36).slice(2, 8)}`;
   return {
     id, label, startISO, endISO,
+    // `initialized` marks whether this month's target cells have been seeded
+    // from the DELIVERED schedule yet. Fresh months start unseeded (false) so
+    // the very first render fills every cell with the real fair figures instead
+    // of a placeholder zero. Committed/restored months keep their flag, so a
+    // genuine user-set 0 (e.g. someone unavailable all month) is preserved.
+    initialized: false,
     targets: emptyScopeMap(names),
     locked: emptyScopeMap(names),
     carryIn: carryIn ? JSON.parse(JSON.stringify(carryIn)) : emptyScopeMap(names),
@@ -2841,8 +2847,9 @@ function loadHKHolidays() {
     });
 }
 
-// Default the active month's targets/locked to the just-delivered counts (so a
-// fresh month opens with targets = fair seed). Returns true if anything changed.
+// Seed the active month's targets/locked from the just-delivered counts so the
+// count table reflects the real schedule figures (not placeholder zeros) and a
+// fresh month opens with targets = fair seed. Returns true if anything changed.
 function ensureMonthTargets(mon, names, counts) {
   let changed = false;
   for (const n of names) {
@@ -2850,12 +2857,41 @@ function ensureMonthTargets(mon, names, counts) {
     mon.locked[n] = mon.locked[n] || {};
     mon.carryIn[n] = mon.carryIn[n] || {};
     mon.carryOut[n] = mon.carryOut[n] || {};
-    for (const sc of SCOPE_KEYS) {
-      if (mon.targets[n][sc] === undefined) { mon.targets[n][sc] = counts[n][sc] || 0; changed = true; }
-      if (mon.locked[n][sc] === undefined) mon.locked[n][sc] = false;
+    // First time we see this month (freshly created / never rendered), stamp
+    // EVERY target cell with the delivered figure so the table shows the real
+    // schedule — not the all-zero placeholder from makeFreshMonth. Committed/
+    // restored months skip this (initialized true), keeping user-set values.
+    if (!mon.initialized) {
+      for (const sc of SCOPE_KEYS) {
+        if (mon.targets[n][sc] !== counts[n][sc]) changed = true;
+        mon.targets[n][sc] = counts[n][sc] || 0; // overwrite placeholder/discrepancy
+        mon.locked[n][sc] = false; // reset locks on a brand-new seed
+      }
+    } else {
+      for (const sc of SCOPE_KEYS) {
+        if (mon.targets[n][sc] === undefined) { mon.targets[n][sc] = counts[n][sc] || 0; changed = true; }
+        if (mon.locked[n][sc] === undefined) mon.locked[n][sc] = false;
+      }
     }
   }
+  if (changed) mon.initialized = true;
   return changed;
+}
+
+// Bulk set the lock state of every target cell in the active month (Lock All /
+// Unlock All). Freezing all cells disables redistribution (invalid edits are
+// rejected by redistributeScope), but the locked targets still steer the next
+// solve. Persists and re-solves so the (un)locked state takes effect live.
+function setAllLocks(lockOn) {
+  const mon = currentMonth();
+  if (!mon) return;
+  const names = parseNames(document.getElementById("names").value || "Andy, Jessica, Tina, Alan");
+  for (const n of names) {
+    mon.locked[n] = mon.locked[n] || {};
+    for (const sc of SCOPE_KEYS) mon.locked[n][sc] = !!lockOn;
+  }
+  saveMonths();
+  updateAll();
 }
 
 // True when this month carries a real steering pressure (a target that differs
@@ -3303,6 +3339,12 @@ function init() {
   const resetBtn = document.getElementById("reset-months-btn");
   if (resetBtn) resetBtn.addEventListener("click", resetToFreshMonth);
 
+  // Bulk lock / unlock every target cell in the active month.
+  const lockAllBtn = document.getElementById("lock-all-btn");
+  if (lockAllBtn) lockAllBtn.addEventListener("click", () => setAllLocks(true));
+  const unlockAllBtn = document.getElementById("unlock-all-btn");
+  if (unlockAllBtn) unlockAllBtn.addEventListener("click", () => setAllLocks(false));
+
   // Live updates when the date range or colleague names change. (Records are
   // added/removed through the Add Record form and its list; those already call
   // updateAll(), so they are not re-wired here.)
@@ -3364,6 +3406,7 @@ if (typeof globalThis !== "undefined" && typeof document === "undefined") {
     makeFreshMonth,
     emptyScopeMap,
     redistributeScope,
+    ensureMonthTargets,
     monthLabel,
     nextMonthRange,
   };

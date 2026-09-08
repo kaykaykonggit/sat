@@ -154,6 +154,10 @@ button.outline:disabled { background: transparent; color: #aab2bf; border-color:
 button.primary.big { padding: 13px 18px; font-size: 16px; }
 button.outline.big { padding: 11px 18px; font-size: 16px; }
 
+/* Compact bulk Lock all / Unlock all toggle above the Shift Counts table. */
+.counts-bulk { justify-content: flex-end; margin: 6px 0 4px; }
+.counts-bulk button.small { flex: 0 0 auto; padding: 5px 12px; font-size: 13px; }
+
 .btn-row {
   display: flex;
   flex-wrap: wrap;
