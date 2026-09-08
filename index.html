@@ -93,6 +93,8 @@
 
     <!-- ======================= Main view ======================= -->
     <main class="main">
+      <section id="month-strip" class="panel month-strip no-pad"></section>
+
       <header>
         <h1>📅 SAT — Shift Arrangement Tool</h1>
         <p class="subtitle">Generate an even, constraint-respecting duty schedule and export it to Excel.</p>
@@ -156,6 +158,11 @@
 
       <section class="panel">
         <h3>Shift Counts</h3>
+        <p class="hint">Edit any figure to set a <strong>target</strong> — the difference is
+        redistributed across the other <em>unlocked</em> cells so each column's total
+        stays fixed. Lock a cell 🔒 to freeze it and steer the next solve toward it.
+        Use the <strong>Total</strong> column for a grand-total target.</p>
+        <p id="counts-note" class="counts-note"></p>
         <div class="table-scroll">
           <table class="counts">
             <thead>
@@ -174,6 +181,27 @@
             <tfoot id="counts-tfoot"></tfoot>
           </table>
         </div>
+        <p class="hint"><strong>Balance · n</strong> = delivered − fair share for that
+        colleague (＋ = did more than fair). <strong>Carried (in)</strong> = fairgap
+        inherited from the previous committed month, which softly steers this month.</p>
+        <p class="hint"><em>Targets steer the schedule but never leave a required shift
+        blank and never override fairness/coverage.</em></p>
+      </section>
+
+      <section class="panel">
+        <div class="btn-row">
+          <button type="button" id="submit-month-btn" class="primary big">
+            ✅ Submit shift arrangement
+          </button>
+          <button type="button" id="reset-months-btn" class="outline">
+            ♻️ Reset months / clear carried balance
+          </button>
+        </div>
+        <p class="hint">
+          <strong>Submit</strong> commits the current month, computes its end-of-month
+          balance, and creates the next month tab (its schedule auto-steers toward
+          the carried balance). <strong>Reset</strong> clears all stored months.
+        </p>
       </section>
 
       <section class="panel export-panel">

@@ -95,10 +95,10 @@ const STATIC_HK_HOLIDAYS = {
     "2026-01-01",
     "2026-02-17", "2026-02-18", "2026-02-19",
     "2026-04-03", "2026-04-04", "2026-04-06", "2026-04-07",
-    "2026-05-01", "2026-05-25",
+    "2026-05-01", "2026-05-24", "2026-05-25",
     "2026-06-19",
     "2026-07-01",
-    "2026-09-26",
+    "2026-09-25", "2026-09-26",
     "2026-10-01", "2026-10-19",
     "2026-12-25", "2026-12-26",
   ],
@@ -574,6 +574,19 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
   // on their shoulders instead of spreading fatigue across everyone else.
   opts = opts || {};
   const mPlusDAccepted = opts.mPlusDAccepted || new Set();
+  // OPTIONAL soft steering bias (multi-month carry-over). Both sub-fields are
+  // keyed by colleague name then scope ('morning'|'deployment'|'thursday'|
+  // 'wsat'|'wsun'|'hcount'|'total'). They are a pure TIE-BREAK on the greedy's
+  // least-count preference: they never leave a required cell blank (coverage is
+  // the only hard invariant) and never override 檔1/檔2 evenness. Steering only
+  // biases which colleague wins among otherwise-equally-even candidates.
+  //   targets[n][s] = authoritative desired share (user-edited / locked target).
+  //   carryIn[n][s] = fairgap inherited from the previous committed month
+  //                   (positive = did MORE last month). Absent in every existing
+  //                   test path, so `haveSteer=false` makes steering a no-op.
+  const haveSteer = !!(opts.targets || opts.carryIn);
+  const targetsIn = opts.targets || {};
+  const carryIn = opts.carryIn || {};
   // manualShifts (optional 6th param): { morning?, deployment?, weekend? }
   // each keyed by iso -> { name, manual:true }. First wins per date.
   manualShifts = manualShifts || {};
@@ -637,6 +650,39 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
   const weekdays = days.filter((d) => !needsWeekendShift(d, holidays));
   const thursdayCount = weekdays.filter((d) => isoWeekday(d) === 3).length;
   const thuTarget = Math.floor(thursdayCount / names.length);
+
+  // ---- Optional steering bias: fair bases + want/steer helpers ------------
+  // When opts.targets / opts.carryIn are absent (every existing test path),
+  // `haveSteer` is false and NOTHING here is consulted — bit-for-bit a no-op.
+  // The fair base for each scope is the equal per-share across colleagues for
+  // THIS month's slot count (mirrors fairShare = round(scopeTotal / staff)).
+  // `want(x, s)` = the effective desired share for x in scope s: an explicit
+  // user target wins; otherwise the fair base MINUS any carried fairgap (a
+  // colleague who did MORE last month should want LESS this month).
+  // `steer(x, s)` = liveCount − want: NEGATIVE = behind → preferred (lower score);
+  // POSITIVE = ahead → avoided. STEER_W sits between the fatigue tier (~8000)
+  // and the 檔2 evenness weight (30000), so it beats fatigue tie-breaks but can
+  // never cross an evenness point — keeping evenness the strict first priority.
+  const fairBases = { morning: perShiftTarget, deployment: perShiftTarget, thursday: thuTarget, wsat: 0, wsun: 0, hcount: 0 };
+  if (haveSteer) {
+    for (const d of weekendShiftDays) {
+      const sc = weekendScope(d, holidays);
+      fairBases[sc] = (fairBases[sc] || 0) + 1;
+    }
+    for (const sc of Object.keys(fairBases)) fairBases[sc] = fairBases[sc] / names.length;
+  }
+  const STEER_W = 2000;
+  const want = (x, s) => {
+    const t = targetsIn[x] && targetsIn[x][s];
+    if (t != null) return t;
+    const carry = (carryIn[x] && carryIn[x][s]) || 0;
+    return fairBases[s] - carry;
+  };
+  const steerScoped = (x, thu) => {
+    const s = thu ? "thursday" : "deployment";
+    return (counts[x] ? counts[x][s] : 0) - want(x, s);
+  };
+  const steerM = (x) => (counts[x] ? counts[x].morning : 0) - want(x, "morning");
   // Precompute the index position of each day within weekendShiftDays for O(1).
   const wsIndex = {};
   weekendShiftDays.forEach((d, i) => { wsIndex[d] = i; });
@@ -854,7 +900,12 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
           }
           const morNext = counts[M].morning + 1;
           const depAxisW = isThu ? TIER1_W : TIER2_W;
-          const evenness = depEven * depAxisW + morNext * TIER2_W;
+          // Soft steering tie-break (only when targets/carryIn present). The
+          // steer term is ≤ ~STEER_W·8 << one evenness point, so it can only
+          // break exact evenness ties — never out-rank evenness or leave a cell
+          // blank. `haveSteer=false` (default) adds nothing → bit-identical.
+          const evenness = depEven * depAxisW + morNext * TIER2_W
+            + (haveSteer ? STEER_W * steerScoped(D, isThu) + STEER_W * steerM(M) : 0);
 
           // D doing Deployment yesterday (consecutive deployment).
           const depConsec = deploymentByDay[yesterdayDay] === D ? 1 : 0;
@@ -998,10 +1049,15 @@ function buildSchedule(start, end, names, holidays, unavailable, manualShifts, o
           // keeping the scope counts even.
           const workedYesterday = workedByDay[dayPlus(day, -1)] || new Set();
           const WS_CONSEC_W = 2500;
-          weekend = pool.reduce((best, n) => {
-            const score = (i) => counts[i][scope] * 1000000 + (workedYesterday.has(i) ? WS_CONSEC_W : 0);
-            return score(n) < score(best) ? n : best;
-          });
+weekend = pool.reduce((best, n) => {
+          // Steering is a pure tie-break here: `counts[i][scope]*1_000_000` is
+          // the 檔1 evenness axis (dominant), and STEER_W·Δ(≤~8) is far smaller,
+          // so steering only nudges which equally-even colleague gets the slot.
+          const score = (i) => counts[i][scope] * 1000000
+            + (haveSteer ? STEER_W * (counts[i][scope] - want(i, scope)) : 0)
+            + (workedYesterday.has(i) ? WS_CONSEC_W : 0);
+          return score(n) < score(best) ? n : best;
+        });
           addCount(counts, weekend, scope, 1);
         }
       }
@@ -2133,42 +2189,185 @@ function renderPreview(rows, namesList, unavailable) {
   wrap.classList.remove("hidden");
 }
 
+// Round a one-decimal balance to a short string (avoid float noise: 0.10000001).
+function round1(v) { return v === 0 ? 0 : parseFloat(v.toFixed(2)); }
+
+// Show an inline note under the counts table (acceptance feedback: rejected
+// edits explain WHY; successful redistributions flash briefly).
+let countsNoteTimer = null;
+function showCountsNote(message, isError) {
+  const el = document.getElementById("counts-note");
+  if (!el) return;
+  el.textContent = message || "";
+  el.className = "counts-note " + (isError ? "error" : "ok");
+  if (countsNoteTimer) clearTimeout(countsNoteTimer);
+  if (!isError && message) {
+    countsNoteTimer = setTimeout(() => { el.textContent = ""; el.className = "counts-note"; }, 3000);
+  }
+}
+
+// Redistribute an edit across a scope's OTHER unlocked colleagues so the column
+// sum stays invariant. `newValue` is the new target for `editedName`. Locked
+// cells are frozen (never touched here). Returns { ok, note? }.
+// Invariants honored:
+//   - column total (Σ targets over the scope) unchanged,
+//   - a reject leaves nothing mutated,
+//   - if no unlocked sink exists and delta != 0, reject.
+function redistributeScope(mon, names, scope, editedName, newValue) {
+  const v = Number.isFinite(newValue) ? Math.max(0, Math.round(newValue)) : 0;
+  const old = (mon.targets[editedName] && mon.targets[editedName][scope]) || 0;
+  const delta = v - old;
+  const unlocked = names.filter((n) => n !== editedName && !(mon.locked[n] && mon.locked[n][scope]));
+  if (delta !== 0 && unlocked.length === 0) {
+    return { ok: false, note: "All cells in this column are locked — unlock one to redistribute." };
+  }
+  // Compute the per-colleague adjustment needed to hold the sum, without mutating
+  // anything yet, so a failed (un-absorbable) edit is a total no-op.
+  const adjust = {}; // name -> +1/-1 steps, summing to -delta
+  if (delta !== 0) {
+    let remaining = -delta;
+    let i = 0;
+    const guard = unlocked.length * 300 + 10;
+    while (remaining !== 0 && i < guard) {
+      const n = unlocked[i % unlocked.length];
+      const cur = (mon.targets[n] && mon.targets[n][scope]) || 0;
+      const step = remaining > 0 ? 1 : -1;
+      if (step < 0 && cur < 1) { i++; continue; } // cannot go below 0
+      adjust[n] = (adjust[n] || 0) + step;
+      remaining -= step;
+      i++;
+    }
+    if (remaining !== 0) {
+      return { ok: false, note: "Cannot keep this column's total invariant (unlocked cells can't absorb the change) — edit rejected." };
+    }
+  }
+  for (const n of Object.keys(adjust)) mon.targets[n][scope] = ((mon.targets[n][scope] || 0) + adjust[n]);
+  mon.targets[editedName][scope] = v;
+  saveMonths();
+  return { ok: true };
+}
+
 function renderCounts(namesList, counts) {
   const tbody = document.getElementById("counts-tbody");
   tbody.innerHTML = "";
-  const keys = ["morning", "deployment", "thursday", "wsat", "wsun", "hcount", "total"];
-  const sums = Object.fromEntries(keys.map((k) => [k, 0]));
+  const mon = currentMonth();
+  const keys = SCOPE_KEYS;
+  if (mon && ensureMonthTargets(mon, namesList, counts)) saveMonths();
+
   for (const n of namesList) {
     const c = counts[n] || { morning: 0, deployment: 0, thursday: 0, wsat: 0, wsun: 0, hcount: 0, total: 0 };
     const tr = document.createElement("tr");
-    [n, c.morning, c.deployment, c.thursday, c.wsat, c.wsun, c.hcount, c.total].forEach((v) => {
+    const nameTd = document.createElement("td");
+    nameTd.className = "counts-name";
+    nameTd.textContent = n;
+    tr.appendChild(nameTd);
+    for (const sc of keys) {
       const td = document.createElement("td");
-      td.textContent = v;
+      td.className = "counts-cell";
+      if (mon) {
+        // Editable target input, plus a lock toggle per cell.
+        const locked = !!(mon.locked[n] && mon.locked[n][sc]);
+        const wrap = document.createElement("span");
+        wrap.className = "counts-edit" + (locked ? " locked" : "");
+        const input = document.createElement("input");
+        input.type = "number";
+        input.min = "0";
+        input.step = "1";
+        input.value = mon.targets[n][sc];
+        input.className = "counts-input";
+        if (locked) input.dataset.locked = "1";
+        input.title = locked
+          ? "Locked target (frozen against redistribution; strongest steering)."
+          : "Editable target. Changing it re-distributes the delta across other unlocked cells.";
+        input.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter") { ev.preventDefault(); input.blur(); }
+        });
+        input.addEventListener("blur", () => {
+          const res = redistributeScope(mon, namesList, sc, n, Number(input.value));
+          showCountsNote(res.ok ? "Target updated — redistributed to keep the column total." : res.note, !res.ok);
+          updateAll(); // re-solve with the new targets + locks
+        });
+        const lockBtn = document.createElement("button");
+        lockBtn.type = "button";
+        lockBtn.className = "counts-lock";
+        lockBtn.textContent = locked ? "🔒" : "🔓";
+        lockBtn.title = locked
+          ? "Unlock this cell (allow redistribution onto it)"
+          : "Lock this cell (freeze it + steer the schedule toward it)";
+        lockBtn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          mon.locked[n][sc] = !mon.locked[n][sc];
+          saveMonths();
+          updateAll(); // re-solve so the (un)locked target becomes the steering bias
+        });
+        wrap.appendChild(input);
+        wrap.appendChild(lockBtn);
+        td.appendChild(wrap);
+      } else {
+        td.textContent = c[sc] || 0;
+      }
       tr.appendChild(td);
-    });
+    }
     tbody.appendChild(tr);
-    for (const k of keys) sums[k] += (c[k] || 0);
   }
-  // Footer: per-column Total and Average (mean across colleagues).
+
+  // Footer rows: per-column Total, Average, per-colleague Balance vs fair share,
+  // and the carried-in fairgap from the previous committed month.
+  const tfoot = document.getElementById("counts-tfoot");
+  if (!tfoot) return;
+  tfoot.innerHTML = "";
+  const sums = Object.fromEntries(keys.map((k) => [k, namesList.reduce((s, n) => s + ((counts[n] ? counts[n][k] : 0) || 0), 0)]));
   const avg = (k) => (namesList.length ? sums[k] / namesList.length : 0);
   const roundAvg = (v) => (Number.isInteger(v) ? v : +v.toFixed(2));
-  const tfoot = document.getElementById("counts-tfoot");
-  if (tfoot) tfoot.innerHTML = "";
-  const totalTr = document.createElement("tr");
-  totalTr.className = "counts-total";
-  [ "Total", ...keys.map((k) => sums[k]) ].forEach((v) => {
-    const td = document.createElement("td");
-    td.textContent = v;
-    totalTr.appendChild(td);
+
+  const mkRow = (cls) => document.createElement("tr");
+  const totalTr = mkRow("counts-total");
+  ["Total", ...keys.map((k) => sums[k])].forEach((v) => {
+    const td = document.createElement("td"); td.textContent = v; totalTr.appendChild(td);
   });
-  const avgTr = document.createElement("tr");
-  avgTr.className = "counts-avg";
-  [ "Average", ...keys.map((k) => roundAvg(avg(k))) ].forEach((v) => {
-    const td = document.createElement("td");
-    td.textContent = v;
-    avgTr.appendChild(td);
+  tfoot.appendChild(totalTr);
+
+  const avgTr = mkRow("counts-avg");
+  ["Average", ...keys.map((k) => roundAvg(avg(k)))].forEach((v) => {
+    const td = document.createElement("td"); td.textContent = v; avgTr.appendChild(td);
   });
-  if (tfoot) { tfoot.appendChild(totalTr); tfoot.appendChild(avgTr); }
+  tfoot.appendChild(avgTr);
+
+  // Balance rows: surplus/deficit vs fair share, per colleague per scope.
+  for (const n of namesList) {
+    const balTr = mkRow("counts-balance");
+    const lab = document.createElement("td");
+    lab.className = "counts-balance-label";
+    lab.textContent = `Balance · ${n}`;
+    balTr.appendChild(lab);
+    for (const sc of keys) {
+      const fair = scopeFairShare(counts, namesList, sc);
+      const diff = round1(((counts[n] ? counts[n][sc] : 0) || 0) - fair);
+      const td = document.createElement("td");
+      td.textContent = (diff > 0 ? "+" : "") + diff;
+      if (diff > 0) td.classList.add("pos");
+      else if (diff < 0) td.classList.add("neg");
+      balTr.appendChild(td);
+    }
+    tfoot.appendChild(balTr);
+  }
+
+  // Carried (in) row: fairgap inherited from the previous committed month.
+  if (mon) {
+    const carTr = mkRow("counts-carried");
+    const lab = document.createElement("td");
+    lab.className = "counts-carried-label";
+    lab.textContent = "Carried (in)";
+    lab.title = "Fairgap carried from the previous month; steers this month softly.";
+    carTr.appendChild(lab);
+    for (const sc of keys) {
+      const carrySum = namesList.reduce((s, n) => s + ((mon.carryIn[n] && mon.carryIn[n][sc]) || 0), 0);
+      const td = document.createElement("td");
+      td.textContent = carrySum || 0;
+      carTr.appendChild(td);
+    }
+    tfoot.appendChild(carTr);
+  }
 }
 
 // Render a flat, copyable log of every violation / "must-bear" message that the
@@ -2478,6 +2677,129 @@ let records = []; // {name, start(iso), end(iso), note}
 // In-memory only, like `records` (reset on reload).
 let manualOverrides = {}; // { iso: { morning?, deployment?, weekend? } }
 
+/* ------------------------- Multi-month workspace + carry-over --------------
+   A persistent, module-level workspace of committed months. Each month is an
+   independent snapshot of that month's editable count-targets, lock states,
+   and the carried fairgaps. The whole array survives reload via localStorage.
+
+   month shape:
+     {
+       id:          unique string,
+       label:       short chip label, e.g. "Sep 2026",
+       startISO,    endISO,
+       targets:     { name: { scope: number } },  // editable target per cell
+       locked:      { name: { scope: boolean } },
+       carryIn:     { name: { scope: number } },  // fairgap this month STARTed with
+       carryOut:    { name: { scope: number } },  // fairgap computed on Submit
+       countsSnapshot: { name: { scope: number } } // delivered counts at Submit
+     }
+   scope keys (fixed): morning / deployment / thursday / wsat / wsun / hcount / total
+  --------------------------------------------------------------------------- */
+const SCOPE_KEYS = ["morning", "deployment", "thursday", "wsat", "wsun", "hcount", "total"];
+const STORAGE_KEY = "sat.months.v1";
+let months = [];
+let currentMonthId = null;
+
+// Fair share for a scope = round(totalDaysInScope / staffCount). used by the
+// Balance row and the carry-out computation.
+function scopeFairShare(counts, names, scope) {
+  const total = names.reduce((s, n) => s + (counts[n] ? counts[n][scope] : 0), 0);
+  return names.length ? total / names.length : 0;
+}
+
+function emptyScopeMap(names, namesSrc) {
+  const map = {};
+  const src = namesSrc || names;
+  for (const n of names) {
+    map[n] = {};
+    for (const sc of SCOPE_KEYS) map[n][sc] = src[n] ? (src[n][sc] || 0) : 0;
+  }
+  return map;
+}
+
+function cloneMonths(monthsArr) {
+  return JSON.parse(JSON.stringify(monthsArr));
+}
+
+function makeFreshMonth(startISO, endISO, names, carryIn) {
+  const label = monthLabel(startISO);
+  const id = `${startISO}__${Math.random().toString(36).slice(2, 8)}`;
+  return {
+    id, label, startISO, endISO,
+    targets: emptyScopeMap(names),
+    locked: emptyScopeMap(names),
+    carryIn: carryIn ? JSON.parse(JSON.stringify(carryIn)) : emptyScopeMap(names),
+    carryOut: emptyScopeMap(names),
+    countsSnapshot: emptyScopeMap(names),
+  };
+}
+
+// "YYYY-MM-DD" -> "Sep 2026".
+function monthLabel(iso) {
+  const [y, m] = iso.split("-");
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${MON[Number(m) - 1]} ${y}`;
+}
+
+// Next month start = day after end; end = same day one calendar month later.
+function nextMonthRange(endISO) {
+  const d = dayPlus(endISO, 1);
+  const y = Number(d.slice(0, 4));
+  const m = Number(d.slice(5, 7)) - 1;
+  const day = Number(d.slice(8, 10));
+  const end = toISO(new Date(y, m + 1, day, 12));
+  return { startISO: d, endISO: end };
+}
+
+function saveMonths() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ months, currentMonthId })); }
+  catch (e) { /* storage full / unavailable: keep in-memory only */ }
+}
+
+function loadMonths() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    if (parsed && Array.isArray(parsed.months) && parsed.months.length) {
+      months = parsed.months;
+      currentMonthId = parsed.currentMonthId || months[months.length - 1].id;
+      // Only keep months whose current month still exists; else fall to last.
+      if (!months.some((m) => m.id === currentMonthId)) currentMonthId = months[months.length - 1].id;
+      return true;
+    }
+  } catch (e) { /* corrupt storage: ignore and start fresh */ }
+  return false;
+}
+
+function resetMonths() {
+  try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* ignore */ }
+  months = [];
+  currentMonthId = null;
+}
+
+function currentMonth() {
+  return months.find((m) => m.id === currentMonthId) || null;
+}
+
+function renderMonthStrip() {
+  const bar = document.getElementById("month-strip");
+  if (!bar) return;
+  bar.innerHTML = "";
+  for (const m of months) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "month-chip" + (m.id === currentMonthId ? " active" : "");
+    chip.textContent = m.label;
+    chip.title = `${m.startISO} → ${m.endISO}`;
+    chip.addEventListener("click", () => {
+      currentMonthId = m.id;
+      switchToMonth();
+    });
+    bar.appendChild(chip);
+  }
+}
+
 function loadHKHolidays() {
   if (hkLoading) return; // never overlap fetches
   hkLoading = true;
@@ -2517,6 +2839,36 @@ function loadHKHolidays() {
     .finally(() => {
       hkLoading = false;
     });
+}
+
+// Default the active month's targets/locked to the just-delivered counts (so a
+// fresh month opens with targets = fair seed). Returns true if anything changed.
+function ensureMonthTargets(mon, names, counts) {
+  let changed = false;
+  for (const n of names) {
+    mon.targets[n] = mon.targets[n] || {};
+    mon.locked[n] = mon.locked[n] || {};
+    mon.carryIn[n] = mon.carryIn[n] || {};
+    mon.carryOut[n] = mon.carryOut[n] || {};
+    for (const sc of SCOPE_KEYS) {
+      if (mon.targets[n][sc] === undefined) { mon.targets[n][sc] = counts[n][sc] || 0; changed = true; }
+      if (mon.locked[n][sc] === undefined) mon.locked[n][sc] = false;
+    }
+  }
+  return changed;
+}
+
+// True when this month carries a real steering pressure (a target that differs
+// from the delivered fair seed, or a non-zero inherited fairgap). When false we
+// skip the second solve entirely — identical to the unsteered baseline.
+function hasSteering(mon, names, counts) {
+  for (const n of names) {
+    const carry = mon.carryIn && mon.carryIn[n];
+    if (carry) for (const sc of SCOPE_KEYS) if ((carry[sc] || 0) !== 0) return true;
+    const tg = mon.targets && mon.targets[n];
+    if (tg && counts[n]) for (const sc of SCOPE_KEYS) if ((tg[sc] || 0) !== (counts[n][sc] || 0)) return true;
+  }
+  return false;
 }
 
 function updateAll() {
@@ -2582,7 +2934,28 @@ function updateAll() {
     }
   }
 
-  const { rows, counts } = buildSchedule(s, e, names, holidays, unavailable, manualShifts, { mPlusDAccepted });
+  // Baseline solve (no steering) — the reference for initializing targets.
+  let { rows, counts } = buildSchedule(s, e, names, holidays, unavailable, manualShifts, { mPlusDAccepted });
+
+  // ---- Multi-month steering state ----
+  const mon = currentMonth();
+  let useSteering = false;
+  if (mon) {
+    // Keep this month's range aligned with the DOM inputs, then default its
+    // targets from the delivered counts (fair seed) if not yet initialized.
+    mon.startISO = s; mon.endISO = e;
+    if (ensureMonthTargets(mon, names, counts)) saveMonths();
+    useSteering = hasSteering(mon, names, counts);
+  }
+  if (mon && useSteering) {
+    // Re-solve WITH the user's targets + carried fairgap. Steering is a soft
+    // tie-break: coverage stays hard, evenness stays dominant, so this can
+    // never add a red/forced row that the unsteered run would not have had.
+    const opt = { mPlusDAccepted };
+    opt.targets = mon.targets;
+    opt.carryIn = mon.carryIn;
+    ({ rows, counts } = buildSchedule(s, e, names, holidays, unavailable, manualShifts, opt));
+  }
 
   // Annotate every cell with the rule(s) it violates (warn, don't forbid). Pure
   // read-only pass; attaches {morningViol, deploymentViol, weekendViol} strings.
@@ -2799,10 +3172,110 @@ function submitBulkRecords() {
   updateAll();
 }
 
+// Load a month's saved snapshot: push its date range into the date inputs and
+// re-solve. `currentMonthId` is already set by the caller (chip click).
+function switchToMonth() {
+  const m = currentMonth();
+  if (!m) return;
+  document.getElementById("startDate").value = m.startISO;
+  document.getElementById("endDate").value = m.endISO;
+  renderMonthStrip();
+  updateAll();
+  // Keep the counts note in a neutral state after switching months.
+  showCountsNote("", false);
+}
+
+// Compute this month's end-of-month fairgap per colleague per scope and carry it
+// into the next (new) month. `fairgap = delivered − fairShare`.
+function computeCarryOut(mon, names, counts) {
+  const out = {};
+  for (const n of names) {
+    out[n] = {};
+    for (const sc of SCOPE_KEYS) {
+      const fair = scopeFairShare(counts, names, sc);
+      out[n][sc] = round1(((counts[n] ? counts[n][sc] : 0) || 0) - fair);
+    }
+  }
+  return out;
+}
+
+// "Submit shift arrangement": commit the CURRENT month (capture its delivered
+// counts + carryOut), then create and switch to the NEXT month, seeding its
+// carryIn from this month's carryOut.
+function submitMonth() {
+  const mon = currentMonth();
+  if (!mon) return;
+  const ex = window.__export;
+  const names = ex && ex.names ? ex.names : parseNames(document.getElementById("names").value);
+  const counts = ex && ex.counts ? ex.counts : null;
+  if (!counts) return;
+
+  // Ensure targets are seeded (so the committed month reflects the on-screen
+  // editable values — the fair-seed default if untouched).
+  if (ensureMonthTargets(mon, names, counts)) saveMonths();
+
+  // Snapshot the delivered counts and the carry-out fairgaps.
+  mon.countsSnapshot = emptyScopeMap(names, counts);
+  mon.carryOut = computeCarryOut(mon, names, counts);
+
+  // Build the next month: start = the day after this month's end; end = one
+  // calendar month later.
+  const nxt = nextMonthRange(mon.endISO);
+  const nextMon = makeFreshMonth(nxt.startISO, nxt.endISO, names, mon.carryOut);
+  months.push(nextMon);
+  currentMonthId = nextMon.id;
+
+  // Switch the date range to the new month and save.
+  document.getElementById("startDate").value = nextMon.startISO;
+  document.getElementById("endDate").value = nextMon.endISO;
+  saveMonths();
+  renderMonthStrip();
+
+  showCountsNote(`Committed ${mon.label}; ${nextMon.label} created, seeded with the carried balance.`, false);
+  updateAll();
+}
+
+// Clear all persisted months and start over with one fresh default month.
+function resetToFreshMonth() {
+  resetMonths();
+  const start = document.getElementById("startDate").value || isoDay(0);
+  const end = document.getElementById("endDate").value || isoDay(30);
+  const names = parseNames(document.getElementById("names").value);
+  const fresh = makeFreshMonth(start, end, names, null);
+  months = [fresh];
+  currentMonthId = fresh.id;
+  saveMonths();
+  document.getElementById("startDate").value = start;
+  document.getElementById("endDate").value = end;
+  renderMonthStrip();
+  showCountsNote("All months reset; carried balance cleared.", false);
+  updateAll();
+}
+
 function init() {
   // Default date range: today .. +30 days.
   document.getElementById("startDate").value = isoDay(0);
   document.getElementById("endDate").value = isoDay(30);
+
+  // ---- Multi-month workspace hydration ----
+  const recovered = loadMonths();
+  if (recovered) {
+    const m = currentMonth();
+    if (m) {
+      document.getElementById("startDate").value = m.startISO;
+      document.getElementById("endDate").value = m.endISO;
+    }
+  } else {
+    // Fresh start: seed a single default month from the current date range.
+    const start = document.getElementById("startDate").value;
+    const end = document.getElementById("endDate").value;
+    const names = parseNames(document.getElementById("names").value);
+    const fresh = makeFreshMonth(start, end, names, null);
+    months = [fresh];
+    currentMonthId = fresh.id;
+    saveMonths();
+  }
+  renderMonthStrip();
 
   // The single "Add Record" form is the only way to create records.
   const addUnified = document.getElementById("add-unified");
@@ -2823,6 +3296,12 @@ function init() {
       if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); submitBulkRecords(); }
     });
   }
+
+  // Multi-month: Submit current month, and Reset-all-months control.
+  const submitBtn = document.getElementById("submit-month-btn");
+  if (submitBtn) submitBtn.addEventListener("click", submitMonth);
+  const resetBtn = document.getElementById("reset-months-btn");
+  if (resetBtn) resetBtn.addEventListener("click", resetToFreshMonth);
 
   // Live updates when the date range or colleague names change. (Records are
   // added/removed through the Add Record form and its list; those already call
@@ -2879,5 +3358,13 @@ if (typeof globalThis !== "undefined" && typeof document === "undefined") {
     deriveFromRecords,
     MONTH_ABBRS,
     STATIC_HK_HOLIDAYS,
+    // Multi-month workspace helpers (DOM-free) — exported so headless probes can
+    // verify steering / redistribution / carry-over without a browser.
+    SCOPE_KEYS,
+    makeFreshMonth,
+    emptyScopeMap,
+    redistributeScope,
+    monthLabel,
+    nextMonthRange,
   };
 }

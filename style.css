@@ -258,6 +258,103 @@ tr.counts-avg td:first-child {
 }
 td.avail-cell { background: var(--orange-fill); }
 
+/* ----------------------- Month strip / workspace --------------------- */
+.month-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+}
+.month-strip.no-pad { padding: 10px 14px; }
+.month-chip {
+  min-height: 36px;
+  padding: 6px 14px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  border-radius: 18px;
+  font-weight: 600;
+}
+.month-chip:hover { background: var(--blue-fill); }
+.month-chip.active {
+  background: var(--primary);
+  color: #fff;
+  box-shadow: var(--elev-1);
+}
+
+/* ----------------------- Editable count-target cells ------------------ */
+table.counts td.counts-name { font-weight: 600; text-align: left; min-width: 6em; }
+td.counts-cell { padding: 2px 3px; }
+span.counts-edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  position: relative;
+  min-width: 68px;
+}
+input.counts-input {
+  width: 44px;
+  padding: 5px 6px;
+  font-size: 14px;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  min-height: 30px;
+}
+input.counts-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--ring);
+}
+span.counts-edit.locked {
+  background: var(--gray-fill);
+  border-radius: 6px;
+  padding: 1px 2px;
+}
+span.counts-edit.locked input.counts-input {
+  background: var(--gray-fill);
+  color: #555;
+  font-weight: 600;
+}
+button.counts-lock {
+  min-width: 24px;
+  min-height: 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 12px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+button.counts-lock:hover { background: rgba(0, 0, 0, 0.08); color: var(--text); }
+
+/* Inline feedback under the counts table */
+p.counts-note { min-height: 1em; font-size: 13px; margin: 4px 0 6px; }
+p.counts-note.ok { color: var(--primary); }
+p.counts-note.error { color: var(--danger); font-weight: 600; }
+
+/* ----------------------- Balance / Carried rows --------------------- */
+tr.counts-balance td, tr.counts-carried td {
+  font-size: 12px;
+  color: var(--muted);
+  background: #fbfcfe;
+}
+td.counts-balance-label, td.counts-carried-label {
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+}
+tr.counts-balance td.pos { color: #b7791f; font-weight: 600; }
+tr.counts-balance td.neg { color: #2f855a; font-weight: 600; }
+tr.counts-carried td { color: var(--text); background: #f1f5f9; }
+td.counts-carried-label { font-weight: 700; }
+
 /* Manual deployment override: bold text on the usual deployment cell fill. */
 td.deploy-manual { font-weight: 700; }
 
